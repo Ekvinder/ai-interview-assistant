@@ -1,45 +1,174 @@
+import { Types } from 'mongoose';
 import { Interview } from '../models/Interview';
+import { Evaluation } from '../models/Evaluation';
 import { ApiError } from '../utils/apiError';
-import { HTTP_STATUS, INTERVIEW_STATUS } from '../utils/constants';
+import { HTTP_STATUS } from '../utils/constants';
 import { connectToDatabase } from '../lib/mongodb';
+import type { InterviewCreateInput, InterviewUpdateInput } from '../validators/interview.validator';
+
+/** Generate a unique room name for a LiveKit room. */
+function generateRoomName(): string {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).slice(2, 8);
+  return `interview-${timestamp}-${random}`;
+}
 
 export class InterviewService {
-  static async createInterview(userId: string, data: { title: string; category: string; difficulty: string }) {
+  /** Create a new interview for the given user. Status defaults to "waiting". */
+  static async createInterview(userId: string, data: InterviewCreateInput) {
     await connectToDatabase();
-    const interview = new Interview({
-      userId,
-      ...data,
-      status: INTERVIEW_STATUS.PENDING,
-    });
-    await interview.save();
-    return interview;
-  }
 
-  static async getInterviewById(interviewId: string, userId: string) {
-    await connectToDatabase();
-    const interview = await Interview.findOne({ _id: interviewId, userId });
-    if (!interview) {
-      throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Interview not found');
+    // Ensure roomName is unique (retry once on collision — astronomically unlikely)
+    let roomName = generateRoomName();
+    const existing = await Interview.findOne({ roomName });
+    if (existing) {
+      roomName = generateRoomName();
     }
+
+    const interview = await Interview.create({
+      userId: new Types.ObjectId(userId),
+      roomName,
+      role: data.role,
+      interviewType: data.interviewType,
+      difficulty: data.difficulty,
+      experience: data.experience,
+      duration: data.duration,
+      status: 'waiting',
+    });
+
     return interview;
   }
 
+  /** Return all interviews belonging to the user, newest first. */
   static async listInterviews(userId: string) {
     await connectToDatabase();
-    const interviews = await Interview.find({ userId }).sort({ createdAt: -1 });
+    const interviews = await Interview.find({ userId: new Types.ObjectId(userId) })
+      .sort({ createdAt: -1 })
+      .lean();
     return interviews;
   }
 
-  static async updateStatus(interviewId: string, userId: string, status: string) {
+  /** Return a single interview, verifying ownership. */
+  static async getInterviewById(interviewId: string, userId: string) {
     await connectToDatabase();
-    const interview = await Interview.findOneAndUpdate(
-      { _id: interviewId, userId },
-      { status },
-      { new: true }
-    );
+
+    if (!Types.ObjectId.isValid(interviewId)) {
+      throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Invalid interview ID');
+    }
+
+    const interview = await Interview.findOne({
+      _id: new Types.ObjectId(interviewId),
+      userId: new Types.ObjectId(userId),
+    }).lean();
+
     if (!interview) {
       throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Interview not found');
     }
+
     return interview;
+  }
+
+  /** Update status and/or startedAt/endedAt timestamps. Verifies ownership.
+   *  When endedAt is provided alongside an existing startedAt, actualDuration
+   *  (in minutes, rounded to the nearest minute, minimum 1) is computed automatically.
+   */
+  static async updateInterview(interviewId: string, userId: string, updates: InterviewUpdateInput) {
+    await connectToDatabase();
+
+    if (!Types.ObjectId.isValid(interviewId)) {
+      throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Invalid interview ID');
+    }
+
+    const patch: Record<string, unknown> = {};
+    if (updates.status !== undefined) patch.status = updates.status;
+    if (updates.startedAt !== undefined) patch.startedAt = new Date(updates.startedAt);
+    if (updates.endedAt !== undefined) patch.endedAt = new Date(updates.endedAt);
+
+    // Auto-compute actualDuration when endedAt is being set
+    if (updates.endedAt !== undefined) {
+      const endedAt = new Date(updates.endedAt);
+
+      // Pull startedAt from the patch or from the existing document
+      let startedAt: Date | undefined;
+      if (updates.startedAt !== undefined) {
+        startedAt = new Date(updates.startedAt);
+      } else {
+        const existing = await Interview.findOne({
+          _id: new Types.ObjectId(interviewId),
+          userId: new Types.ObjectId(userId),
+        }).select('startedAt').lean();
+        if (existing?.startedAt) {
+          startedAt = new Date(existing.startedAt);
+        }
+      }
+
+      if (startedAt) {
+        const diffMs = endedAt.getTime() - startedAt.getTime();
+        // Convert to minutes, minimum 1
+        patch.actualDuration = Math.max(1, Math.round(diffMs / 60_000));
+      }
+    }
+
+    const interview = await Interview.findOneAndUpdate(
+      { _id: new Types.ObjectId(interviewId), userId: new Types.ObjectId(userId) },
+      { $set: patch },
+      { new: true, lean: true }
+    );
+
+    if (!interview) {
+      throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Interview not found');
+    }
+
+    return interview;
+  }
+
+  /** Return dashboard stats for a user. */
+  static async getDashboardStats(userId: string) {
+    await connectToDatabase();
+
+    const userObjectId = new Types.ObjectId(userId);
+
+    const [totalInterviews, completed, recentInterviews] = await Promise.all([
+      Interview.countDocuments({ userId: userObjectId }),
+      Interview.countDocuments({ userId: userObjectId, status: 'completed' }),
+      Interview.find({ userId: userObjectId })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean(),
+    ]);
+
+    // Fetch evaluations for completed interviews to compute scores
+    const completedInterviewIds = await Interview.find({
+      userId: userObjectId,
+      status: 'completed',
+    })
+      .select('_id')
+      .lean()
+      .then((docs) => docs.map((d) => d._id));
+
+    let averageScore: number | null = null;
+    let bestScore: number | null = null;
+
+    if (completedInterviewIds.length > 0) {
+      const evaluations = await Evaluation.find({
+        interviewId: { $in: completedInterviewIds },
+      })
+        .select('overallScore')
+        .lean();
+
+      if (evaluations.length > 0) {
+        const scores = evaluations.map((e) => e.overallScore);
+        averageScore = Math.round(scores.reduce((sum, s) => sum + s, 0) / scores.length);
+        bestScore = Math.max(...scores);
+      }
+    }
+
+    return {
+      totalInterviews,
+      completed,
+      averageScore,
+      bestScore,
+      recentInterviews,
+    };
   }
 }

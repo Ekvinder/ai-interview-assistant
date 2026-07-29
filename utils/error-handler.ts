@@ -7,8 +7,8 @@ import { errorResponse } from "./api-response";
  */
 export function handleApiError(error: unknown) {
   if (error instanceof ZodError) {
-    const message = error.errors
-      .map((e) => `${e.path.join(".")}: ${e.message}`)
+    const message = error.issues
+      .map((e: any) => `${e.path.join(".")}: ${e.message}`)
       .join(", ");
     return errorResponse(`Validation error: ${message}`, 422);
   }

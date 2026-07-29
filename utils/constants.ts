@@ -9,9 +9,10 @@ export const HTTP_STATUS = {
 } as const;
 
 export const INTERVIEW_STATUS = {
-  PENDING: 'PENDING',
-  ACTIVE: 'ACTIVE',
-  COMPLETED: 'COMPLETED',
-  CANCELLED: 'CANCELLED',
-  FAILED: 'FAILED',
+  WAITING: 'waiting',
+  ACTIVE: 'active',
+  COMPLETED: 'completed',
+  CANCELLED: 'cancelled',
 } as const;
+
+export type InterviewStatus = typeof INTERVIEW_STATUS[keyof typeof INTERVIEW_STATUS];

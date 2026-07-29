@@ -2,6 +2,7 @@ import { GoogleGenAI, Modality } from "@google/genai";
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY!,
+  httpOptions: { apiVersion: 'v1alpha' }
 });
 
 let session: any = null;

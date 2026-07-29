@@ -4,7 +4,7 @@ import { gemini } from "@/lib/gemini/client";
 export async function GET() {
   try {
     const response = await gemini.models.generateContent({
-      model: "models/gemini-2.0-flash-001",
+      model: "gemini-3.1-flash-live-preview",
       contents: "Say hello in one sentence.",
     });
 

@@ -21,15 +21,9 @@ const routes = [
     color: "text-sky-500",
   },
   {
-    label: "Interviews",
-    icon: Users,
-    href: "/dashboard/interview/new",
-    color: "text-violet-500",
-  },
-  {
     label: "History",
     icon: History,
-    href: "/dashboard/history",
+    href: "/history",
     color: "text-pink-700",
   },
   {
@@ -46,7 +40,7 @@ export function Sidebar() {
     <div className="space-y-4 py-4 flex flex-col h-full bg-muted/20 border-r">
       <div className="px-3 py-2 flex-1">
         <Link href="/dashboard" className="flex items-center pl-3 mb-14">
-          <h1 className="text-xl font-bold">Interview AI</h1>
+          <h1 className="text-xl font-bold">MeetSpace</h1>
         </Link>
         <div className="space-y-1">
           {routes.map((route) => (

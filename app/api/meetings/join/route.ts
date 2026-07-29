@@ -1,0 +1,29 @@
+import { NextRequest } from 'next/server';
+import { getCurrentUser } from '@/lib/auth';
+import { MeetingService } from '@/services/meeting.service';
+import { createResponse } from '@/utils/response';
+import { joinMeetingSchema } from '@/validators/meeting.validator';
+import { z } from 'zod';
+
+export async function POST(req: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return createResponse(false, 'Unauthorized', null, 401);
+    }
+
+    const body = await req.json();
+    const validatedData = joinMeetingSchema.parse(body);
+
+    const meeting = await MeetingService.joinMeeting(user.userId, validatedData.meetingId);
+    return createResponse(true, 'Joined meeting successfully', meeting);
+  } catch (error: unknown) {
+    console.error('POST /api/meetings/join error:', error);
+    if (error instanceof z.ZodError) {
+      return createResponse(false, 'Validation Error', error.issues, 400);
+    }
+    const err = error as { statusCode?: number, message?: string };
+    const status = err.statusCode || 500;
+    return createResponse(false, err.message || 'Internal Server Error', null, status);
+  }
+}

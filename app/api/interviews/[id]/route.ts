@@ -3,7 +3,7 @@ import { getCurrentUser } from '../../../../lib/auth';
 import { InterviewService } from '../../../../services/interview.service';
 import { createResponse } from '../../../../utils/response';
 import { ApiError } from '../../../../utils/apiError';
-import { InterviewUpdateStatusSchema } from '../../../../validators/interview.validator';
+import { InterviewUpdateSchema } from '../../../../validators/interview.validator';
 
 export async function GET(
   req: NextRequest,
@@ -23,6 +23,7 @@ export async function GET(
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }
+    console.error('[GET /api/interviews/[id]]', error);
     return createResponse(false, 'Internal server error', null, 500);
   }
 }
@@ -39,9 +40,9 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await req.json();
-    const validatedData = InterviewUpdateStatusSchema.parse(body);
+    const validatedData = InterviewUpdateSchema.parse(body);
 
-    const interview = await InterviewService.updateStatus(id, currentUser.userId, validatedData.status);
+    const interview = await InterviewService.updateInterview(id, currentUser.userId, validatedData);
 
     return createResponse(true, 'Interview updated successfully', interview);
   } catch (error: any) {
@@ -51,6 +52,7 @@ export async function PATCH(
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }
+    console.error('[PATCH /api/interviews/[id]]', error);
     return createResponse(false, 'Internal server error', null, 500);
   }
 }

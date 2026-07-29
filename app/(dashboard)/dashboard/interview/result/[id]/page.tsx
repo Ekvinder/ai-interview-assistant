@@ -1,29 +1,56 @@
 'use client';
 
+import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { CheckCircle2, XCircle, Download, ArrowLeft } from 'lucide-react';
+import {
+  CheckCircle2,
+  XCircle,
+  Download,
+  ArrowLeft,
+  Clock,
+  Timer,
+  Loader2,
+} from 'lucide-react';
+import { getInterview, type Interview } from '@/lib/api';
 
-export default function InterviewResultPage({ params }: { params: { id: string } }) {
-  // Dummy data for UI demonstration
-  const overallScore = 85;
+export default function InterviewResultPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+
+  const [interview, setInterview] = useState<Interview | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    getInterview(id)
+      .then((data) => { if (!cancelled) setInterview(data); })
+      .catch(() => { /* non-fatal — result page shows partial data */ })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [id]);
+
+  // Evaluation scores are not yet generated (Phase 4), so we show placeholders.
   const metrics = [
-    { label: 'Technical Skills', score: 90 },
-    { label: 'Communication', score: 80 },
-    { label: 'Confidence', score: 75 },
-    { label: 'Problem Solving', score: 95 },
+    { label: 'Technical Skills',  score: null },
+    { label: 'Communication',     score: null },
+    { label: 'Confidence',        score: null },
+    { label: 'Problem Solving',   score: null },
   ];
 
   return (
     <div className="flex-1 p-8 pt-6 max-w-5xl mx-auto space-y-8">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Interview Results</h2>
-          <p className="text-muted-foreground mt-2">
-            Detailed performance report for your recent session.
-          </p>
+          {interview && (
+            <p className="text-muted-foreground mt-1 capitalize">
+              {interview.role} — {interview.interviewType} · {interview.difficulty}
+            </p>
+          )}
         </div>
         <div className="flex gap-4">
           <Link href="/dashboard">
@@ -32,39 +59,84 @@ export default function InterviewResultPage({ params }: { params: { id: string }
               Back to Dashboard
             </Button>
           </Link>
-          <Button className="gap-2">
+          <Button className="gap-2" disabled>
             <Download className="w-4 h-4" />
             Download Report
           </Button>
         </div>
       </div>
 
+      {/* Duration cards */}
+      {loading ? (
+        <div className="flex items-center gap-3 text-muted-foreground">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          <span className="text-sm">Loading interview details…</span>
+        </div>
+      ) : interview ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card className="p-4 space-y-1">
+            <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wide">
+              <Clock className="w-3.5 h-3.5" />
+              Planned Duration
+            </div>
+            <p className="text-2xl font-bold">{interview.duration} min</p>
+          </Card>
+
+          <Card className="p-4 space-y-1">
+            <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wide">
+              <Timer className="w-3.5 h-3.5" />
+              Actual Duration
+            </div>
+            <p className="text-2xl font-bold">
+              {interview.actualDuration != null
+                ? `${interview.actualDuration} min`
+                : '—'}
+            </p>
+          </Card>
+
+          <Card className="p-4 space-y-1">
+            <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wide">
+              Status
+            </div>
+            <Badge
+              variant="outline"
+              className={
+                interview.status === 'completed'
+                  ? 'bg-emerald-500/10 text-emerald-500 text-sm'
+                  : 'bg-muted text-muted-foreground text-sm'
+              }
+            >
+              {interview.status}
+            </Badge>
+          </Card>
+
+          <Card className="p-4 space-y-1">
+            <div className="flex items-center gap-2 text-muted-foreground text-xs uppercase tracking-wide">
+              Date
+            </div>
+            <p className="text-sm font-medium">
+              {new Date(interview.createdAt).toLocaleDateString(undefined, {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+              })}
+            </p>
+          </Card>
+        </div>
+      ) : null}
+
+      {/* Score section — placeholder until evaluation is generated */}
       <div className="grid md:grid-cols-3 gap-6">
-        {/* Overall Score */}
         <Card className="flex flex-col items-center justify-center p-6 bg-primary/5 border-primary/20">
-          <h3 className="font-semibold text-lg mb-6">Overall Score</h3>
+          <h3 className="font-semibold text-lg mb-4">Overall Score</h3>
           <div className="relative w-40 h-40 flex items-center justify-center rounded-full border-8 border-muted">
-            {/* Fake circular progress */}
-            <svg className="absolute inset-0 w-full h-full transform -rotate-90">
-              <circle
-                cx="50%"
-                cy="50%"
-                r="46%"
-                className="stroke-primary fill-none"
-                strokeWidth="8%"
-                strokeDasharray="289"
-                strokeDashoffset={289 - (289 * overallScore) / 100}
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="text-4xl font-bold">{overallScore}%</span>
+            <span className="text-2xl font-bold text-muted-foreground">—</span>
           </div>
-          <p className="mt-6 text-sm text-center text-muted-foreground">
-            Great job! You performed better than 78% of candidates.
+          <p className="mt-4 text-sm text-center text-muted-foreground">
+            Evaluation not yet available.
           </p>
         </Card>
 
-        {/* Detailed Metrics */}
         <Card className="md:col-span-2">
           <CardHeader>
             <CardTitle>Score Breakdown</CardTitle>
@@ -74,9 +146,9 @@ export default function InterviewResultPage({ params }: { params: { id: string }
               <div key={metric.label} className="space-y-2">
                 <div className="flex justify-between text-sm font-medium">
                   <span>{metric.label}</span>
-                  <span>{metric.score}%</span>
+                  <span className="text-muted-foreground">—</span>
                 </div>
-                <Progress value={metric.score} className="h-2" />
+                <Progress value={0} className="h-2 opacity-30" />
               </div>
             ))}
           </CardContent>
@@ -92,20 +164,9 @@ export default function InterviewResultPage({ params }: { params: { id: string }
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ul className="space-y-2 text-sm">
-              <li className="flex gap-2">
-                <span className="text-emerald-500">•</span>
-                Excellent grasp of React fundamentals and hooks.
-              </li>
-              <li className="flex gap-2">
-                <span className="text-emerald-500">•</span>
-                Structured problem-solving approach.
-              </li>
-              <li className="flex gap-2">
-                <span className="text-emerald-500">•</span>
-                Clear and concise communication.
-              </li>
-            </ul>
+            <p className="text-sm text-muted-foreground">
+              Strengths will appear here after evaluation is generated.
+            </p>
           </CardContent>
         </Card>
 
@@ -117,16 +178,9 @@ export default function InterviewResultPage({ params }: { params: { id: string }
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ul className="space-y-2 text-sm">
-              <li className="flex gap-2">
-                <span className="text-red-500">•</span>
-                Review advanced state management patterns (Redux/Zustand).
-              </li>
-              <li className="flex gap-2">
-                <span className="text-red-500">•</span>
-                Work on avoiding filler words (um, like) during explanations.
-              </li>
-            </ul>
+            <p className="text-sm text-muted-foreground">
+              Improvement areas will appear here after evaluation is generated.
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -137,9 +191,7 @@ export default function InterviewResultPage({ params }: { params: { id: string }
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            Based on this interview, we recommend focusing on system design concepts for frontend applications. 
-            You handled the technical questions perfectly, but taking a moment to structure your thoughts before speaking 
-            will improve your confidence score. Consider practicing a "Senior Frontend" scenario next.
+            Recommendations will be available after the AI evaluation is complete.
           </p>
         </CardContent>
       </Card>

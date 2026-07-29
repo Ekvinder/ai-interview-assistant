@@ -25,6 +25,7 @@ export async function POST(req: NextRequest) {
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }
+    console.error('[POST /api/interviews]', error);
     return createResponse(false, 'Internal server error', null, 500);
   }
 }
@@ -43,6 +44,7 @@ export async function GET() {
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }
+    console.error('[GET /api/interviews]', error);
     return createResponse(false, 'Internal server error', null, 500);
   }
 }
