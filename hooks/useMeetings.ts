@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { meetingClientService, PaginatedMeetings } from '@/services/client/meeting.service';
 
 interface UseMeetingsProps {
@@ -12,6 +12,10 @@ export function useMeetings({ type, initialPage = 1, limit = 10 }: UseMeetingsPr
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(initialPage);
+
+  // Keep a ref so refresh() always reads the current page without going stale
+  const pageRef = useRef(page);
+  useEffect(() => { pageRef.current = page; }, [page]);
 
   const fetchMeetings = useCallback(async (currentPage: number) => {
     setLoading(true);
@@ -33,13 +37,15 @@ export function useMeetings({ type, initialPage = 1, limit = 10 }: UseMeetingsPr
   }, [type, limit]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchMeetings(page);
+    const load = async () => {
+      await fetchMeetings(page);
+    };
+    void load();
   }, [page, fetchMeetings]);
 
-  const refresh = () => {
-    fetchMeetings(page);
-  };
+  const refresh = useCallback(() => {
+    fetchMeetings(pageRef.current);
+  }, [fetchMeetings]);
 
   return {
     data,
@@ -47,6 +53,6 @@ export function useMeetings({ type, initialPage = 1, limit = 10 }: UseMeetingsPr
     error,
     page,
     setPage,
-    refresh
+    refresh,
   };
 }

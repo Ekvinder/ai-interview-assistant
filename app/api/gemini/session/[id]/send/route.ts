@@ -32,8 +32,9 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     const body = await req.json();
     text = (body.text ?? '').toString().trim();
-  } catch {
-    return NextResponse.json({ success: false, message: 'Invalid request body' }, { status: 400 });
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err : new Error('Invalid request body');
+    return NextResponse.json({ success: false, message: error.message }, { status: 400 });
   }
 
   if (!text) {
@@ -43,9 +44,10 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     sendMessage(interviewId, text);
     return NextResponse.json({ success: true });
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err : new Error('Failed to send message');
     return NextResponse.json(
-      { success: false, message: err.message ?? 'Failed to send message' },
+      { success: false, message: error.message },
       { status: 500 },
     );
   }

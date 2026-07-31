@@ -13,7 +13,7 @@ export async function GET() {
     const stats = await InterviewService.getDashboardStats(currentUser.userId);
 
     return createResponse(true, 'Dashboard stats fetched successfully', stats);
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }

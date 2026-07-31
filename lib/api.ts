@@ -98,19 +98,28 @@ export interface LiveKitTokenResponse {
   url: string;
 }
 
+export interface LiveKitTokenOptions {
+  /** Display name for the participant — stored as participant.name in LiveKit */
+  name?: string;
+  /** JSON string stored as participant.metadata in LiveKit */
+  metadata?: string;
+}
+
 /**
- * Request a LiveKit JWT from the existing token API.
- * @param roomName - The LiveKit room name (stored on the interview as `roomName`)
- * @param identity - Unique identity for this participant (e.g. userId)
+ * Request a LiveKit JWT from the token API.
+ * @param roomName - LiveKit room name (meetingId for meetings)
+ * @param identity - Unique participant identity (userId)
+ * @param options  - Optional display name and metadata
  */
 export async function getLiveKitToken(
   roomName: string,
   identity: string,
+  options?: LiveKitTokenOptions,
 ): Promise<LiveKitTokenResponse> {
   const res = await fetch('/api/livekit/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ roomName, identity }),
+    body: JSON.stringify({ roomName, identity, ...options }),
   });
 
   const json = await res.json();

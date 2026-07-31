@@ -24,7 +24,7 @@ export function MeetingHistoryTable() {
   // we will filter client-side over the fetched page, or just keep it simple.
   const [statusFilter, setStatusFilter] = useState<string>('all');
   
-  const { data, loading, error, page, setPage, refresh } = useMeetings({ type: 'history', limit: 10 });
+  const { data, loading, error, setPage, refresh } = useMeetings({ type: 'history', limit: 10 });
 
   const meetings = data?.meetings || [];
   
@@ -48,13 +48,11 @@ export function MeetingHistoryTable() {
         </div>
         <div className="flex items-center gap-2 w-full md:w-auto">
           <select 
-            className="border rounded px-3 py-2 text-sm w-full md:w-auto"
+            className="border rounded px-3 py-2 text-sm w-full md:w-auto bg-background"
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value)}
           >
-            <option value="all">All Statuses</option>
-            <option value="scheduled">Scheduled</option>
-            <option value="active">Active</option>
+            <option value="all">All</option>
             <option value="ended">Ended</option>
           </select>
         </div>

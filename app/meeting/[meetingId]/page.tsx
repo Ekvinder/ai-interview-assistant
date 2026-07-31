@@ -1,30 +1,48 @@
 import { getCurrentUser } from '@/lib/auth';
 import { redirect } from 'next/navigation';
 import { MeetingService } from '@/services/meeting.service';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { statusBadgeClass } from '@/components/dashboard/MeetingCard';
+import { connectToDatabase } from '@/lib/mongodb';
+import { User } from '@/models/User';
+import type { IMeeting } from '@/types';
+import MeetingRoom from './MeetingRoom';
 import { Button } from '@/components/ui/button';
+import { AlertCircle, Clock } from 'lucide-react';
 import Link from 'next/link';
 
-export default async function MeetingPlaceholderPage({
+export default async function MeetingPage({
   params,
 }: {
-  params: { meetingId: string };
+  params: Promise<{ meetingId: string }>;
 }) {
+  // Auth guard
   const user = await getCurrentUser();
   if (!user) {
     redirect('/login');
   }
 
-  let meeting;
+  const { meetingId } = await params;
+
+  // ── Fetch full user profile for display name ─────────────────────────────
+  await connectToDatabase();
+  const dbUser = await User.findById(user.userId).select('name email').lean();
+  const userName: string = (dbUser as { name?: string; email: string } | null)?.name
+    || (dbUser as { name?: string; email: string } | null)?.email
+    || user.email;
+
+  // ── Fetch and validate the meeting ──────────────────────────────────────
+  let meeting: IMeeting | null = null;
   try {
-    meeting = await MeetingService.getMeetingByMeetingId(params.meetingId);
+    meeting = await MeetingService.getMeetingByMeetingId(meetingId);
   } catch {
     return (
-      <div className="flex flex-col items-center justify-center h-screen space-y-4">
+      <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
+        <AlertCircle className="w-12 h-12 text-muted-foreground opacity-40" />
         <h1 className="text-2xl font-bold">Meeting Not Found</h1>
-        <p className="text-muted-foreground">The meeting ID {params.meetingId} is invalid or has been deleted.</p>
+        <p className="text-muted-foreground text-sm max-w-sm">
+          The meeting ID{' '}
+          <span className="font-mono font-semibold">{meetingId}</span> does not
+          exist or has been removed.
+        </p>
         <Link href="/dashboard">
           <Button variant="outline">Return to Dashboard</Button>
         </Link>
@@ -32,53 +50,45 @@ export default async function MeetingPlaceholderPage({
     );
   }
 
+  // ── Reject ended meetings ────────────────────────────────────────────────
+  if (meeting.status === 'ended') {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
+        <Clock className="w-12 h-12 text-muted-foreground opacity-40" />
+        <h1 className="text-2xl font-bold">Meeting Ended</h1>
+        <p className="text-muted-foreground text-sm max-w-sm">
+          This meeting has already ended and is no longer available to join.
+        </p>
+        <Link href="/dashboard">
+          <Button variant="outline">Return to Dashboard</Button>
+        </Link>
+      </div>
+    );
+  }
+
+  // ── Register this user as a participant (idempotent) ─────────────────────
+  try {
+    await MeetingService.joinMeeting(user.userId, meetingId);
+  } catch {
+    // Non-fatal — already a participant, or transient DB hiccup.
+  }
+
+  // ── Hand off to the client room component ────────────────────────────────
+  // meeting.host is the ObjectId of the host user
+  const hostUserId = meeting.host._id?.toString() || meeting.host.toString();
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-muted/20 p-8">
-      <Card className="w-full max-w-3xl shadow-lg">
-        <CardHeader className="text-center space-y-2 pb-6 border-b">
-          <CardTitle className="text-3xl font-bold tracking-tight">{meeting.title}</CardTitle>
-          <div className="flex items-center justify-center gap-2 mt-2">
-            <Badge variant="secondary" className="text-sm">ID: {meeting.meetingId}</Badge>
-            <Badge variant="outline" className={`capitalize ${statusBadgeClass(meeting.status)}`}>
-              {meeting.status}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-6 pt-6">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-sm text-muted-foreground">Host</p>
-              <p className="font-medium">{meeting.host.name || meeting.host.email}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Scheduled Time</p>
-              <p className="font-medium">
-                {new Date(meeting.scheduledFor || meeting.createdAt).toLocaleString()}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Participants</p>
-              <p className="font-medium">{meeting.participants?.length || 0}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Duration</p>
-              <p className="font-medium">{meeting.duration ? `${meeting.duration} min` : 'Not specified'}</p>
-            </div>
-          </div>
-          
-          <div className="bg-primary/5 border border-primary/20 rounded-xl p-6 text-center mt-8">
-            <h3 className="text-lg font-semibold text-primary mb-2">Live Meeting Room</h3>
-            <p className="text-sm text-muted-foreground">
-              Live Meeting Room will be implemented in Phase 5.
-            </p>
-            <div className="mt-4">
-              <Link href="/dashboard">
-                <Button>Return to Dashboard</Button>
-              </Link>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+    <MeetingRoom
+      meeting={{
+        title:     meeting.title,
+        meetingId: meeting.meetingId,
+        status:    meeting.status,
+        _id:       meeting._id.toString(),
+      }}
+      userId={user.userId}
+      userName={userName}
+      userEmail={user.email}
+      hostUserId={hostUserId}
+    />
   );
 }

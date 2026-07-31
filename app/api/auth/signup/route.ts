@@ -48,10 +48,11 @@ export async function POST(req: NextRequest) {
     });
 
     return response;
-  } catch (error: any) {
-    if (error.name === 'ZodError') {
-      return createResponse(false, 'Validation failed', error.issues, 400);
+  } catch (error: unknown) {
+    if (error instanceof Error && error.name === 'ZodError') {
+      return createResponse(false, 'Validation failed', (error as { issues?: unknown }).issues, 400);
     }
-    console.error(error); return createResponse(false, 'Internal server error', null, 500);
+    console.error(error);
+    return createResponse(false, 'Internal server error', null, 500);
   }
 }

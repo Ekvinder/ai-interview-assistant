@@ -19,7 +19,7 @@ export async function GET(
     const interview = await InterviewService.getInterviewById(id, currentUser.userId);
 
     return createResponse(true, 'Interview fetched successfully', interview);
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }
@@ -45,9 +45,9 @@ export async function PATCH(
     const interview = await InterviewService.updateInterview(id, currentUser.userId, validatedData);
 
     return createResponse(true, 'Interview updated successfully', interview);
-  } catch (error: any) {
-    if (error.name === 'ZodError') {
-      return createResponse(false, 'Validation failed', error.issues, 400);
+  } catch (error: unknown) {
+    if (error instanceof Error && error.name === 'ZodError') {
+      return createResponse(false, 'Validation failed', (error as { issues?: unknown }).issues, 400);
     }
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);

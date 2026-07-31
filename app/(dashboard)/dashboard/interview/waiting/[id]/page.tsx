@@ -29,8 +29,11 @@ export default function WaitingRoomPage({ params }: { params: Promise<{ id: stri
       try {
         const data = await getInterview(id);
         if (!cancelled) setInterview(data);
-      } catch (err: any) {
-        if (!cancelled) setLoadError(err.message ?? 'Failed to load interview details.');
+      } catch (err: unknown) {
+        if (!cancelled) {
+          const error = err instanceof Error ? err : new Error('Failed to load interview details.');
+          setLoadError(error.message);
+        }
       }
     }
 
@@ -62,8 +65,9 @@ export default function WaitingRoomPage({ params }: { params: Promise<{ id: stri
 
       // Step 4 – navigate to the interview room
       router.push(`/dashboard/interview/${id}`);
-    } catch (err: any) {
-      setJoinError(err.message ?? 'Failed to join. Please try again.');
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error('Failed to join. Please try again.');
+      setJoinError(error.message);
       setJoining(false);
       setJoinStep(null);
     }

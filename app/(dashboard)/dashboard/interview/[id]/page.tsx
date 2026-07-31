@@ -115,15 +115,27 @@ export default function InterviewRoomPage({ params }: { params: Promise<{ id: st
 
   // Retrieve the LiveKit token placed by the waiting room
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(LIVEKIT_TOKEN_KEY);
-      if (!raw) { setSessionError('No session found. Please join from the waiting room.'); return; }
-      const parsed: StoredSession = JSON.parse(raw);
-      if (parsed.interviewId !== id) { setSessionError('Session mismatch. Please rejoin.'); return; }
-      setSession(parsed);
-    } catch {
-      setSessionError('Failed to read session. Please rejoin from the waiting room.');
-    }
+    const restoreSession = () => {
+      try {
+        const raw = sessionStorage.getItem(LIVEKIT_TOKEN_KEY);
+        if (!raw) {
+          setSessionError('No session found. Please join from the waiting room.');
+          return;
+        }
+
+        const parsed: StoredSession = JSON.parse(raw);
+        if (parsed.interviewId !== id) {
+          setSessionError('Session mismatch. Please rejoin.');
+          return;
+        }
+
+        setSession(parsed);
+      } catch {
+        setSessionError('Failed to read session. Please rejoin from the waiting room.');
+      }
+    };
+
+    restoreSession();
   }, [id]);
 
   /** Complete the interview — idempotent, called from every end path. */
@@ -349,10 +361,11 @@ function RoomContent({
 
         // Open the SSE stream to receive events
         openStream();
-      } catch (err: any) {
-        console.error('[Gemini Session]', err);
+      } catch (err: unknown) {
+        const error = err instanceof Error ? err : new Error('AI failed to start');
+        console.error('[Gemini Session]', error);
         setGeminiStatus('error');
-        setGeminiError(err.message ?? 'AI failed to start');
+        setGeminiError(error.message);
       }
     };
 
@@ -397,9 +410,10 @@ function RoomContent({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message ?? 'Failed to restart AI session');
       openStream();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error('AI failed to restart');
       setGeminiStatus('error');
-      setGeminiError(err.message ?? 'AI failed to restart');
+      setGeminiError(error.message);
     }
   }, [interviewId, interview, openStream]);
 

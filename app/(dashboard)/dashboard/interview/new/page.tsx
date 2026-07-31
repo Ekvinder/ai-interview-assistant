@@ -46,8 +46,9 @@ export default function CreateInterviewPage() {
       });
 
       router.push(`/dashboard/interview/waiting/${interview._id}`);
-    } catch (err: any) {
-      setError(err.message ?? 'Failed to create interview. Please try again.');
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error('Failed to create interview. Please try again.');
+      setError(error.message);
     } finally {
       setLoading(false);
     }

@@ -1,12 +1,15 @@
 'use client';
 
 import { useState, FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Eye, EyeOff } from 'lucide-react';
 
 export default function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -33,7 +36,10 @@ export default function LoginForm() {
         return;
       }
 
-      router.push('/dashboard');
+      // Honour the callbackUrl set by middleware (e.g. when landing on a
+      // meeting link while unauthenticated). Fall back to dashboard.
+      const callbackUrl = searchParams.get('callbackUrl');
+      router.push(callbackUrl || '/dashboard');
     } catch {
       setError('Something went wrong. Please try again.');
     } finally {
@@ -69,14 +75,24 @@ export default function LoginForm() {
         <label htmlFor="password" className="text-sm font-medium">
           Password <span aria-hidden="true">*</span>
         </label>
-        <input
-          id="password"
-          name="password"
-          type="password"
-          required
-          placeholder="Your password"
-          className="border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-black"
-        />
+        <div className="relative">
+          <input
+            id="password"
+            name="password"
+            type={showPassword ? 'text' : 'password'}
+            required
+            placeholder="Your password"
+            className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-black pr-10"
+          />
+          <button
+            type="button"
+            className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-700"
+            onClick={() => setShowPassword(!showPassword)}
+            tabIndex={-1}
+          >
+            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
 
       <button

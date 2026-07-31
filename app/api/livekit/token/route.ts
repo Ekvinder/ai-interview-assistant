@@ -3,11 +3,13 @@ import { generateLiveKitToken } from "@/services/livekit.service";
 
 export async function POST(request: NextRequest) {
   try {
-    const { roomName, identity } = await request.json();
+    const { roomName, identity, name, metadata } = await request.json();
 
     const token = await generateLiveKitToken({
       roomName,
       identity,
+      name,
+      metadata,
     });
 
     return NextResponse.json({

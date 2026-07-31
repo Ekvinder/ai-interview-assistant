@@ -25,7 +25,7 @@ export async function GET(
     const user = await UserService.getUserById(id);
 
     return createResponse(true, 'User fetched successfully', user);
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }
@@ -55,9 +55,9 @@ export async function PATCH(
     const user = await UserService.updateUser(id, validatedData);
 
     return createResponse(true, 'User updated successfully', user);
-  } catch (error: any) {
-    if (error.name === 'ZodError') {
-      return createResponse(false, 'Validation failed', error.issues, 400);
+  } catch (error: unknown) {
+    if (error instanceof Error && error.name === 'ZodError') {
+      return createResponse(false, 'Validation failed', (error as { issues?: unknown }).issues, 400);
     }
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
@@ -85,7 +85,7 @@ export async function DELETE(
     await UserService.deleteUser(id);
 
     return createResponse(true, 'User deleted successfully', null);
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }

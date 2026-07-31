@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, COOKIE_NAME } from './lib/auth';
 
-const PROTECTED_PATHS = ['/dashboard', '/interviews'];
+const PROTECTED_PATHS = ['/dashboard', '/interviews', '/meeting'];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

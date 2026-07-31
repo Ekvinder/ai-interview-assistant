@@ -133,8 +133,7 @@ export class MeetingService {
     try {
       await connectToDatabase();
       
-      const meeting = await Meeting.findOne({ meetingId });
-      if (!meeting) {
+      const meeting = await Meeting.findOne({ meetingId });      if (!meeting) {
         throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
       }
       
@@ -246,10 +245,11 @@ export class MeetingService {
       await connectToDatabase();
       
       const skip = (page - 1) * limit;
+      const userObjectId = new Types.ObjectId(userId);
       
       // Match meetings where user is host or participant
       const query = {
-        $or: [{ host: userId }, { 'participants.user': userId }],
+        $or: [{ host: userObjectId }, { 'participants.user': userObjectId }],
         status: 'ended'
       };
       
@@ -258,7 +258,8 @@ export class MeetingService {
           .sort({ endedAt: -1 })
           .skip(skip)
           .limit(limit)
-          .populate('host', 'name email'),
+          .populate('host', 'name email')
+          .lean(),
         Meeting.countDocuments(query)
       ]);
       
@@ -274,11 +275,13 @@ export class MeetingService {
       await connectToDatabase();
       
       const skip = (page - 1) * limit;
-      
+      const userObjectId = new Types.ObjectId(userId);
+
+      // Upcoming = scheduled/active meetings where user is host or participant.
+      // Instant meetings have no scheduledFor, so we cannot require that field.
       const query = {
-        $or: [{ host: userId }, { 'participants.user': userId }],
-        status: 'scheduled',
-        scheduledFor: { $gte: new Date() }
+        $or: [{ host: userObjectId }, { 'participants.user': userObjectId }],
+        status: { $in: ['scheduled', 'active'] },
       };
       
       const [meetings, total] = await Promise.all([
@@ -286,7 +289,8 @@ export class MeetingService {
           .sort({ scheduledFor: 1 })
           .skip(skip)
           .limit(limit)
-          .populate('host', 'name email'),
+          .populate('host', 'name email')
+          .lean(),
         Meeting.countDocuments(query)
       ]);
       

@@ -43,8 +43,11 @@ export default function HistoryPage() {
       try {
         const data = await listInterviews();
         if (!cancelled) setInterviews(data);
-      } catch (err: any) {
-        if (!cancelled) setError(err.message ?? 'Failed to load interview history.');
+      } catch (err: unknown) {
+        if (!cancelled) {
+          const error = err instanceof Error ? err : new Error('Failed to load interview history.');
+          setError(error.message);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }

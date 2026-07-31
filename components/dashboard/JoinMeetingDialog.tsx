@@ -31,12 +31,24 @@ export function JoinMeetingDialog({ trigger }: JoinMeetingDialogProps) {
     e.preventDefault();
     if (!meetingId.trim()) return;
     
+    // Accept either a bare meeting ID or a full URL (e.g. pasted from clipboard).
+    // Extract just the last path segment.
+    let resolvedId = meetingId.trim();
+    try {
+      const url = new URL(resolvedId);
+      // It's a valid URL — take the last non-empty path segment
+      const segments = url.pathname.split('/').filter(Boolean);
+      resolvedId = segments[segments.length - 1] ?? resolvedId;
+    } catch {
+      // Not a URL — use as-is
+    }
+
     setLoading(true);
     setError(null);
     try {
-      await meetingClientService.joinMeeting(meetingId.trim());
+      await meetingClientService.joinMeeting(resolvedId);
       setOpen(false);
-      router.push(`/meeting/${meetingId.trim()}`);
+      router.push(`/meeting/${resolvedId}`);
     } catch (err: any) {
       setError(err.message || 'Failed to join meeting');
     } finally {
@@ -55,11 +67,11 @@ export function JoinMeetingDialog({ trigger }: JoinMeetingDialogProps) {
           {error && <div className="text-sm text-red-500 bg-red-50 p-2 rounded">{error}</div>}
           
           <div className="space-y-2">
-            <Label htmlFor="meetingId">Meeting ID</Label>
+            <Label htmlFor="meetingId">Meeting ID or Link</Label>
             <Input
               id="meetingId"
               required
-              placeholder="e.g. 1a2b3c4d5e"
+              placeholder="e.g. 29af26bd68 or paste a meeting link"
               value={meetingId}
               onChange={e => setMeetingId(e.target.value)}
             />

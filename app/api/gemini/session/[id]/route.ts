@@ -57,10 +57,11 @@ export async function POST(req: NextRequest, { params }: Params) {
     await createSession(interviewId, { role, interviewType, difficulty, experience });
 
     return NextResponse.json({ success: true, message: 'Session started', status: 'connecting' });
-  } catch (err: any) {
-    console.error('[Gemini Session POST]', err);
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err : new Error('Failed to start Gemini session');
+    console.error('[Gemini Session POST]', error);
     return NextResponse.json(
-      { success: false, message: err.message ?? 'Failed to start Gemini session' },
+      { success: false, message: error.message },
       { status: 500 },
     );
   }

@@ -18,9 +18,9 @@ export async function POST(req: NextRequest) {
     const interview = await InterviewService.createInterview(currentUser.userId, validatedData);
 
     return createResponse(true, 'Interview created successfully', interview, 201);
-  } catch (error: any) {
-    if (error.name === 'ZodError') {
-      return createResponse(false, 'Validation failed', error.issues, 400);
+  } catch (error: unknown) {
+    if (error instanceof Error && error.name === 'ZodError') {
+      return createResponse(false, 'Validation failed', (error as { issues?: unknown }).issues, 400);
     }
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
@@ -40,7 +40,7 @@ export async function GET() {
     const interviews = await InterviewService.listInterviews(currentUser.userId);
 
     return createResponse(true, 'Interviews fetched successfully', interviews);
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (error instanceof ApiError) {
       return createResponse(false, error.message, null, error.statusCode);
     }
