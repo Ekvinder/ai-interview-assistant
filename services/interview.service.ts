@@ -128,44 +128,44 @@ export class InterviewService {
 
     const userObjectId = new Types.ObjectId(userId);
 
-    const [totalInterviews, completed, recentInterviews] = await Promise.all([
+    // Run all independent queries in parallel
+    const [totalInterviews, completedCount, recentInterviews, scoreAgg] = await Promise.all([
       Interview.countDocuments({ userId: userObjectId }),
       Interview.countDocuments({ userId: userObjectId, status: 'completed' }),
       Interview.find({ userId: userObjectId })
         .sort({ createdAt: -1 })
         .limit(5)
         .lean(),
+      // Single aggregation: join interviews → evaluations and compute stats
+      Interview.aggregate([
+        { $match: { userId: userObjectId, status: 'completed' } },
+        {
+          $lookup: {
+            from: 'evaluations',
+            localField: '_id',
+            foreignField: 'interviewId',
+            as: 'evaluation',
+          },
+        },
+        { $unwind: { path: '$evaluation', preserveNullAndEmptyArrays: false } },
+        {
+          $group: {
+            _id: null,
+            averageScore: { $avg: '$evaluation.overallScore' },
+            bestScore: { $max: '$evaluation.overallScore' },
+          },
+        },
+      ]),
     ]);
 
-    // Fetch evaluations for completed interviews to compute scores
-    const completedInterviewIds = await Interview.find({
-      userId: userObjectId,
-      status: 'completed',
-    })
-      .select('_id')
-      .lean()
-      .then((docs) => docs.map((d) => d._id));
-
-    let averageScore: number | null = null;
-    let bestScore: number | null = null;
-
-    if (completedInterviewIds.length > 0) {
-      const evaluations = await Evaluation.find({
-        interviewId: { $in: completedInterviewIds },
-      })
-        .select('overallScore')
-        .lean();
-
-      if (evaluations.length > 0) {
-        const scores = evaluations.map((e) => e.overallScore);
-        averageScore = Math.round(scores.reduce((sum, s) => sum + s, 0) / scores.length);
-        bestScore = Math.max(...scores);
-      }
-    }
+    const averageScore =
+      scoreAgg.length > 0 ? Math.round(scoreAgg[0].averageScore) : null;
+    const bestScore =
+      scoreAgg.length > 0 ? scoreAgg[0].bestScore : null;
 
     return {
       totalInterviews,
-      completed,
+      completed: completedCount,
       averageScore,
       bestScore,
       recentInterviews,

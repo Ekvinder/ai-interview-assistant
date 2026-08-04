@@ -87,7 +87,7 @@ function collectGeminiGreeting(prompt: string): Promise<string> {
 
     ai.live
       .connect({
-        model: 'gemini-3.1-flash-live-preview',
+        model: 'gemini-2.0-flash-live-preview',
         config: {
           // Request text output so we can return it as JSON
           responseModalities: [Modality.TEXT],

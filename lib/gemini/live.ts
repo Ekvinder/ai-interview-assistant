@@ -1,51 +1,39 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY!,
-  httpOptions: { apiVersion: 'v1alpha' }
-});
+// Lazy-initialised client — avoids connecting to Gemini on module import.
+let ai: GoogleGenAI | null = null;
+function getAI(): GoogleGenAI {
+  if (!ai) {
+    ai = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY!,
+      httpOptions: { apiVersion: 'v1alpha' },
+    });
+  }
+  return ai;
+}
 
 let session: any = null;
 
 export async function createLiveSession() {
-  session = await ai.live.connect({
-    model: "gemini-3.1-flash-live-preview",
-
+  session = await getAI().live.connect({
+    model: "gemini-2.0-flash-live-preview",
     config: {
-  responseModalities: [Modality.AUDIO],
-
-  outputAudioTranscription: {},
-
-  systemInstruction:
-    "You are a professional AI interviewer. Greet the candidate.",
-},
-
+      responseModalities: [Modality.AUDIO],
+      outputAudioTranscription: {},
+      systemInstruction: "You are a professional AI interviewer. Greet the candidate.",
+    },
     callbacks: {
       onopen: () => {
         console.log("✅ Gemini Live Connected");
       },
-
-     onmessage: (message) => {
-  console.log("======== MESSAGE ========");
-
-  if (message.serverContent?.outputTranscription?.text) {
-    console.log(
-      "Transcript:",
-      message.serverContent.outputTranscription.text
-    );
-  }
-
-  if (message.data) {
-    console.log("Audio chunk received");
-  }
-
-  console.log(JSON.stringify(message, null, 2));
-},
-
+      onmessage: (message) => {
+        if (message.serverContent?.outputTranscription?.text) {
+          console.log("Transcript:", message.serverContent.outputTranscription.text);
+        }
+      },
       onerror: (error) => {
         console.error("Gemini Error:", error);
       },
-
       onclose: (event) => {
         console.log("Gemini Closed:", event.reason);
       },

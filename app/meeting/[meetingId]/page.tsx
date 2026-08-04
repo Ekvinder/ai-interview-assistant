@@ -50,6 +50,24 @@ export default async function MeetingPage({
     );
   }
 
+  // ── Guard against null (getMeetingByMeetingId may return null) ──────────
+  if (!meeting) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
+        <AlertCircle className="w-12 h-12 text-muted-foreground opacity-40" />
+        <h1 className="text-2xl font-bold">Meeting Not Found</h1>
+        <p className="text-muted-foreground text-sm max-w-sm">
+          The meeting ID{' '}
+          <span className="font-mono font-semibold">{meetingId}</span> does not
+          exist or has been removed.
+        </p>
+        <Link href="/dashboard">
+          <Button variant="outline">Return to Dashboard</Button>
+        </Link>
+      </div>
+    );
+  }
+
   // ── Reject ended meetings ────────────────────────────────────────────────
   if (meeting.status === 'ended') {
     return (
@@ -66,16 +84,15 @@ export default async function MeetingPage({
     );
   }
 
-  // ── Register this user as a participant (idempotent) ─────────────────────
-  try {
-    await MeetingService.joinMeeting(user.userId, meetingId);
-  } catch {
-    // Non-fatal — already a participant, or transient DB hiccup.
-  }
-
   // ── Hand off to the client room component ────────────────────────────────
   // meeting.host is the ObjectId of the host user
   const hostUserId = meeting.host._id?.toString() || meeting.host.toString();
+
+  // Hosts are admitted on page entry; guests are admitted only by the approval
+  // endpoint after an explicit host decision.
+  if (hostUserId === user.userId) {
+    try { await MeetingService.joinMeeting(user.userId, meetingId); } catch { /* surfaced by room if needed */ }
+  }
 
   return (
     <MeetingRoom

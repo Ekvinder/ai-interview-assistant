@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const validatedData = joinMeetingSchema.parse(body);
 
-    const meeting = await MeetingService.joinMeeting(user.userId, validatedData.meetingId);
-    return createResponse(true, 'Joined meeting successfully', meeting);
+    const request = await MeetingService.requestJoin(user.userId, validatedData.meetingId);
+    return createResponse(true, request.status === 'approved' ? 'Join approved' : 'Join request submitted', request);
   } catch (error: unknown) {
     console.error('POST /api/meetings/join error:', error);
     if (error instanceof z.ZodError) {

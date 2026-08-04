@@ -16,11 +16,14 @@ interface MongooseCache {
   promise: Promise<typeof mongoose> | null;
 }
 
-let cached = (global as { mongoose?: MongooseCache }).mongoose;
+const globalWithMongoose = global as { mongoose?: MongooseCache };
 
-if (!cached) {
-  cached = (global as { mongoose?: MongooseCache }).mongoose = { conn: null, promise: null };
+if (!globalWithMongoose.mongoose) {
+  globalWithMongoose.mongoose = { conn: null, promise: null };
 }
+
+// After the guard above, mongoose is guaranteed to be set.
+const cached = globalWithMongoose.mongoose as MongooseCache;
 
 export async function connectToDatabase() {
   if (cached.conn) {
@@ -30,6 +33,11 @@ export async function connectToDatabase() {
   if (!cached.promise) {
     const opts = {
       bufferCommands: false,
+      maxPoolSize: 10,          // cap connection pool (default is 100)
+      minPoolSize: 2,           // keep 2 connections warm
+      serverSelectionTimeoutMS: 5000,  // fail fast if mongo is unreachable
+      socketTimeoutMS: 45000,   // close idle sockets after 45 s
+      connectTimeoutMS: 10000,  // TCP connection timeout
     };
 
     cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {

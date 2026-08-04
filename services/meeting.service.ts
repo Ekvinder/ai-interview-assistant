@@ -169,6 +169,80 @@ export class MeetingService {
     }
   }
 
+  /**
+   * Records a guest's request without admitting them to the meeting. The host is
+   * admitted immediately because they own the room.
+   */
+  static async requestJoin(userId: string, meetingId: string) {
+    await connectToDatabase();
+    const meeting = await Meeting.findOne({ meetingId });
+    if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+    if (meeting.status === 'ended') throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'This meeting has ended');
+
+    if (meeting.host.toString() === userId) {
+      await this.joinMeeting(userId, meetingId);
+      return { status: 'approved' as const };
+    }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const requests = meeting.joinRequests ?? [];
+    const request = requests.find((r: { user: Types.ObjectId }) => r.user.toString() === userId);
+    const participant = meeting.participants.find((p: { user: Types.ObjectId; isPresent: boolean }) => p.user.toString() === userId);
+    // A previous approval is valid only while that admission is active. Once a
+    // guest leaves or is removed, a later join must be approved again.
+    const needsNewApproval = request?.status === 'approved' && !participant?.isPresent;
+    if (!request || request.status === 'denied' || needsNewApproval) {
+      if (request) {
+        request.status = 'pending';
+        request.requestedAt = new Date();
+        request.decidedAt = undefined;
+      } else {
+        meeting.joinRequests.push({ user: userObjectId, status: 'pending', requestedAt: new Date() });
+      }
+      await meeting.save();
+      return { status: 'pending' as const };
+    }
+    return { status: request.status as 'pending' | 'approved' | 'denied' };
+  }
+
+  static async getJoinRequestStatus(userId: string, meetingId: string) {
+    await connectToDatabase();
+    const meeting = await Meeting.findOne({ meetingId }).select('host joinRequests status');
+    if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+    if (meeting.host.toString() === userId) return { status: 'approved' as const };
+    const request = (meeting.joinRequests ?? []).find((r: { user: Types.ObjectId }) => r.user.toString() === userId);
+    return { status: (request?.status ?? 'pending') as 'pending' | 'approved' | 'denied' };
+  }
+
+  static async getPendingJoinRequests(hostUserId: string, meetingId: string) {
+    await connectToDatabase();
+    const meeting = await Meeting.findOne({ meetingId }).populate('joinRequests.user', 'name email');
+    if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+    if (meeting.host.toString() !== hostUserId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only the host can view join requests');
+    return (meeting.joinRequests ?? [])
+      .filter((request: { status: string }) => request.status === 'pending')
+      .map((request: { user: { _id: Types.ObjectId; name?: string; email?: string }; requestedAt: Date }) => ({
+        userId: request.user._id.toString(),
+        name: request.user.name || request.user.email || 'Guest',
+        requestedAt: request.requestedAt,
+      }));
+  }
+
+  static async decideJoinRequest(hostUserId: string, meetingId: string, guestUserId: string, approved: boolean) {
+    await connectToDatabase();
+    const meeting = await Meeting.findOne({ meetingId });
+    if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+    if (meeting.host.toString() !== hostUserId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only the host can decide join requests');
+    const request = (meeting.joinRequests ?? []).find((r: { user: Types.ObjectId }) => r.user.toString() === guestUserId);
+    if (!request || request.status !== 'pending') throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Join request is no longer pending');
+
+    request.status = approved ? 'approved' : 'denied';
+    request.decidedAt = new Date();
+    await meeting.save();
+    if (approved) await this.joinMeeting(guestUserId, meetingId);
+    return { status: request.status as 'approved' | 'denied' };
+  }
+
   static async leaveMeeting(userId: string, meetingId: string) {
     try {
       await connectToDatabase();
@@ -186,8 +260,18 @@ export class MeetingService {
       if (participant) {
         participant.isPresent = false;
         participant.leftAt = new Date();
-        await meeting.save();
       }
+
+      // A guest who leaves before approval must disappear from the host's
+      // pending-request list. Approved requests are retained as an audit trail
+      // and requestJoin requires a fresh approval after isPresent becomes false.
+      if (!participant) {
+        meeting.joinRequests = (meeting.joinRequests ?? []).filter(
+          (request: { user: Types.ObjectId; status: string }) =>
+            request.user.toString() !== userObjectId.toString() || request.status !== 'pending',
+        );
+      }
+      await meeting.save();
       
       return meeting;
     } catch (error: unknown) {
@@ -267,6 +351,38 @@ export class MeetingService {
     } catch (error: unknown) {
       const err = error as { message?: string };
       throw new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, err.message || 'Failed to fetch meeting history');
+    }
+  }
+
+  static async saveWhiteboard(meetingId: string, dataUrl: string) {
+    try {
+      await connectToDatabase();
+      const meeting = await Meeting.findOne({ meetingId });
+      if (!meeting) {
+        throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+      }
+      meeting.whiteboardData = dataUrl;
+      await meeting.save();
+      return { saved: true };
+    } catch (error: unknown) {
+      if (error instanceof ApiError) throw error;
+      const err = error as { message?: string };
+      throw new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, err.message || 'Failed to save whiteboard');
+    }
+  }
+
+  static async loadWhiteboard(meetingId: string) {
+    try {
+      await connectToDatabase();
+      const meeting = await Meeting.findOne({ meetingId }).select('whiteboardData');
+      if (!meeting) {
+        throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+      }
+      return { whiteboardData: meeting.whiteboardData ?? '' };
+    } catch (error: unknown) {
+      if (error instanceof ApiError) throw error;
+      const err = error as { message?: string };
+      throw new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, err.message || 'Failed to load whiteboard');
     }
   }
 

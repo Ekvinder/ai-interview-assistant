@@ -3,7 +3,7 @@ import { verifyToken, COOKIE_NAME } from './lib/auth';
 
 const PROTECTED_PATHS = ['/dashboard', '/interviews', '/meeting'];
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   const isProtected = PROTECTED_PATHS.some((path) => pathname.startsWith(path));
@@ -17,7 +17,7 @@ export function middleware(req: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // NOTE: jsonwebtoken is not supported on Edge runtime. 
+  // NOTE: jsonwebtoken is not supported on Edge runtime.
   // We check for token presence here, but real verification happens in Server Components.
   return NextResponse.next();
 }

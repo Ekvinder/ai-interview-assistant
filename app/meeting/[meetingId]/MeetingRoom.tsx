@@ -1,7 +1,7 @@
 'use client';
 
 import '@livekit/components-styles';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   LiveKitRoom,
@@ -22,6 +22,7 @@ import { ConnectionState, Track, Participant } from 'livekit-client';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { roomOptions } from '@/lib/livekit-client-options';
 import {
   Mic, MicOff,
   Video, VideoOff,
@@ -40,15 +41,20 @@ import {
   Crown,
   MessageSquare,
   Send,
-  Hand,
   ShieldAlert,
   Lock,
   UserMinus,
   XCircle,
+  PenTool,
+  Eraser,
+  Trash2,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 import { getLiveKitToken } from '@/lib/api';
 import { meetingClientService } from '@/services/client/meeting.service';
 import { toast } from 'sonner';
+import ScreenShareView from './components/ScreenShareView';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -57,12 +63,6 @@ interface MeetingInfo {
   meetingId: string;
   status: string;
   _id: string;
-}
-
-interface StoredToken {
-  token: string;
-  url: string;
-  meetingId: string;
 }
 
 export const MEETING_TOKEN_KEY = 'meeting_livekit_token';
@@ -112,7 +112,9 @@ function isMicMuted(micRef: TrackReferenceOrPlaceholder | undefined): boolean {
 
 // ─── Duration timer ───────────────────────────────────────────────────────────
 
-function useDuration(running: boolean) {
+// Isolated component — only the clock text re-renders every second,
+// not the entire RoomContent tree.
+function DurationClock({ running }: { running: boolean }) {
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
     if (!running) return;
@@ -121,9 +123,8 @@ function useDuration(running: boolean) {
   }, [running]);
   const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
   const ss = String(seconds % 60).padStart(2, '0');
-  return `${mm}:${ss}`;
+  return <span className="font-mono tabular-nums">{mm}:{ss}</span>;
 }
-
 // ─── Root component ───────────────────────────────────────────────────────────
 
 interface MeetingRoomProps {
@@ -139,24 +140,62 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
   const [token, setToken]           = useState<string | null>(null);
   const [serverUrl, setServerUrl]   = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
-  const [loading, setLoading]       = useState(true);
+  const [joinStatus, setJoinStatus] = useState<'pending' | 'approved' | 'denied'>(userId === hostUserId ? 'approved' : 'pending');
+  const [loading, setLoading]       = useState(userId === hostUserId);
   const leftRef = useRef(false);
+  const isHost = userId === hostUserId;
 
   useEffect(() => {
     let cancelled = false;
-    async function init() {
+    async function requestAdmission() {
+      if (isHost) return;
+      setLoading(true);
+      try {
+        // A prior token must not let a guest bypass a new approval decision.
+        sessionStorage.removeItem(MEETING_TOKEN_KEY);
+        await meetingClientService.joinMeeting(meeting.meetingId);
+        const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId);
+        if (!cancelled) setJoinStatus(status);
+      } catch (err) {
+        if (!cancelled) setTokenError((err as Error).message || 'Failed to request admission');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    requestAdmission();
+    return () => { cancelled = true; };
+  }, [isHost, meeting.meetingId]);
+
+  useEffect(() => {
+    if (isHost || joinStatus !== 'pending') return;
+    let delay = 2000;
+    let timerId: ReturnType<typeof setTimeout>;
+    let active = true;
+
+    const poll = async () => {
+      try {
+        const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId);
+        if (!active) return;
+        setJoinStatus(status);
+        // Stop polling once the host made a decision
+        if (status !== 'pending') return;
+      } catch { /* transient — keep retrying */ }
+      // Exponential backoff: 2 s → 4 s → 8 s → cap at 10 s
+      delay = Math.min(delay * 1.5, 10_000);
+      timerId = setTimeout(poll, delay);
+    };
+
+    timerId = setTimeout(poll, delay);
+    return () => { active = false; clearTimeout(timerId); };
+  }, [isHost, joinStatus, meeting.meetingId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function getApprovedToken() {
+      if (joinStatus !== 'approved') return;
       setLoading(true);
       setTokenError(null);
       try {
-        const stored = sessionStorage.getItem(MEETING_TOKEN_KEY);
-        if (stored) {
-          const parsed: StoredToken = JSON.parse(stored);
-          if (parsed.meetingId === meeting.meetingId) {
-            if (!cancelled) { setToken(parsed.token); setServerUrl(parsed.url); }
-            return;
-          }
-          sessionStorage.removeItem(MEETING_TOKEN_KEY);
-        }
         const { token: t, url: u } = await getLiveKitToken(
           meeting.meetingId,
           userId,
@@ -170,16 +209,18 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
         if (!cancelled) setLoading(false);
       }
     }
-    init();
+    getApprovedToken();
     return () => { cancelled = true; };
-  }, [meeting.meetingId, userId, userName, userEmail]);
+  }, [joinStatus, meeting.meetingId, userId, userName, userEmail]);
 
-  const handleLeave = useCallback(async () => {
+  const handleLeave = useCallback(() => {
     if (leftRef.current) return;
     leftRef.current = true;
     sessionStorage.removeItem(MEETING_TOKEN_KEY);
-    try { await meetingClientService.leaveMeeting(meeting.meetingId); } catch { /* non-blocking */ }
-    router.push('/dashboard');
+    // Do not make navigation depend on a network round trip. Unmounting the
+    // room disconnects LiveKit immediately; the API call only records it.
+    void meetingClientService.leaveMeeting(meeting.meetingId).catch(() => undefined);
+    router.replace('/dashboard');
   }, [meeting.meetingId, router]);
 
   useEffect(() => {
@@ -196,6 +237,28 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       <div className="flex flex-col items-center justify-center flex-1 gap-4 text-muted-foreground">
         <Loader2 className="w-8 h-8 animate-spin" />
         <p className="text-sm">Connecting to meeting…</p>
+      </div>
+    );
+  }
+
+  if (joinStatus === 'pending' && !isHost) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
+        <Clock className="w-10 h-10 text-muted-foreground opacity-60" />
+        <h2 className="font-semibold text-lg">Waiting for the host</h2>
+        <p className="text-sm text-muted-foreground max-w-sm">Your join request was sent. Your camera and microphone will not connect until the host allows you in.</p>
+        <Button variant="outline" onClick={handleLeave}>Leave waiting room</Button>
+      </div>
+    );
+  }
+
+  if (joinStatus === 'denied') {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
+        <XCircle className="w-10 h-10 text-destructive opacity-70" />
+        <h2 className="font-semibold text-lg">Join request denied</h2>
+        <p className="text-sm text-muted-foreground max-w-sm">The host did not allow you to join this meeting.</p>
+        <Button variant="outline" onClick={handleLeave}>Back to Dashboard</Button>
       </div>
     );
   }
@@ -220,6 +283,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
 
   return (
     <LiveKitRoom
+      options={roomOptions}
       token={token}
       serverUrl={serverUrl}
       connect
@@ -238,27 +302,33 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}
     >
       <RoomAudioRenderer />
-      <RoomContent meeting={meeting} onLeave={handleLeave} hostUserId={hostUserId} />
+      <RoomContent meeting={meeting} onLeave={handleLeave} hostUserId={hostUserId} userId={userId} />
     </LiveKitRoom>
   );
 }
 
 // ─── Inner room ───────────────────────────────────────────────────────────────
 
-function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; onLeave: () => void; hostUserId?: string }) {
+function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: MeetingInfo; onLeave: () => void; hostUserId?: string; userId: string }) {
   const connState                                          = useConnectionState();
   const participants                                       = useParticipants();
   const { localParticipant, isScreenShareEnabled }         = useLocalParticipant();
   const isConnected                                        = connState === ConnectionState.Connected;
-  const duration                                           = useDuration(isConnected);
 
-  // Panel state: 'participants' | 'chat' | 'host' | null
-  const [showPanel, setShowPanel] = useState<'participants' | 'chat' | 'host' | null>(null);
+  // Derive isHost from props (not from localParticipant) so it is correct from
+  // the very first render — before LiveKit has connected and populated
+  // localParticipant. Using localParticipant?.identity here caused the host
+  // polling useEffect to see isHost=false on mount, exit early, and never
+  // re-register even after LiveKit connected.
+  const isHost = !!(hostUserId && userId === hostUserId);
+
+  // Panel state: 'participants' | 'chat' | 'host' | 'whiteboard' | null
+  const [showPanel, setShowPanel] = useState<'participants' | 'chat' | 'host' | 'whiteboard' | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   // Ref mirrors showPanel so the unread effect always reads the current value
-  const showPanelRef = useRef<'participants' | 'chat' | 'host' | null>(null);
+  const showPanelRef = useRef<'participants' | 'chat' | 'host' | 'whiteboard' | null>(null);
 
-  const togglePanel = useCallback((panel: 'participants' | 'chat' | 'host') => {
+  const togglePanel = useCallback((panel: 'participants' | 'chat' | 'host' | 'whiteboard') => {
     setShowPanel((p) => {
       const next = p === panel ? null : panel;
       showPanelRef.current = next;
@@ -367,114 +437,71 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
   const { toggle: toggleCamera,       enabled: cameraEnabled, pending: cameraPending } = useTrackToggle({ source: Track.Source.Camera });
   const { toggle: toggleScreenShare,  pending: screenPending  }                        = useTrackToggle({ source: Track.Source.ScreenShare });
 
-  // ── Raise hand — broadcast via data channel ───────────────────────────────
-  const RAISE_HAND_TOPIC = 'raise-hand' as const;
-  const [raisedHands, setRaisedHands] = useState<Set<string>>(new Set());
-
-  const { send: sendHandSignal } = useDataChannel(RAISE_HAND_TOPIC, (msg) => {
-    try {
-      const { identity, raised } = JSON.parse(new TextDecoder().decode(msg.payload)) as { identity: string; raised: boolean };
-      setRaisedHands((prev) => {
-        const next = new Set(prev);
-        if (raised) { next.add(identity); } else { next.delete(identity); }
-        return next;
-      });
-    } catch { /* malformed payload — ignore */ }
-  });
-
-  const localHandRaised = !!(localParticipant && raisedHands.has(localParticipant.identity));
-
-  const handleRaiseHand = useCallback(() => {
-    if (!localParticipant) return;
-    const raised = !localHandRaised;
-    const payload = new TextEncoder().encode(
-      JSON.stringify({ identity: localParticipant.identity, raised }),
-    );
-    // Update own state immediately (we don't receive our own data channel messages)
-    setRaisedHands((prev) => {
-      const next = new Set(prev);
-      if (raised) { next.add(localParticipant.identity); } else { next.delete(localParticipant.identity); }
-      return next;
-    });
-    // Broadcast to all other participants
-    sendHandSignal(payload, {});
-  }, [localParticipant, localHandRaised, sendHandSignal]);
-
   // ── Host controls ─────────────────────────────────────────────────────────
-  const isHost = !!(hostUserId && localParticipant?.identity === hostUserId);
-  const [isLocked,         setIsLocked]         = useState(false);
+  const [isLocked,         setIsLocked]         = useState(false); // meeting lock placeholder
+  const [whiteboardLocked, setWhiteboardLocked] = useState(false); // whiteboard lock state
+  const toggleWhiteboardLock = useCallback(() => setWhiteboardLocked((l) => !l), []);
   const [removingIdentity, setRemovingIdentity] = useState<string | null>(null);
   const [endingMeeting,    setEndingMeeting]    = useState(false);
 
-  // Join-request approval flow — uses a dedicated data channel.
-  // Non-hosts broadcast a join-request when they connect.
-  // Host receives it, shows a toast with Allow/Deny.
-  // Host broadcasts join-response; denied user disconnects.
-  const JOIN_REQ_TOPIC  = 'join-request'  as const;
-  const JOIN_RESP_TOPIC = 'join-response' as const;
+  // Host approval is deliberately outside LiveKit. A pending guest has no room
+  // token, so cannot connect, publish, subscribe, or appear in this UI.
+  //
+  // notifiedJoinRequestsRef tracks *active* pending toasts so we don't stack
+  // duplicate toasts for the same request. The entry is removed as soon as the
+  // host decides (allow/deny), so if the guest re-requests after a denial the
+  // host will receive a fresh notification.
+  const notifiedJoinRequestsRef = useRef(new Set<string>());
+  const meetingIdRef = useRef(meeting.meetingId);
+  useEffect(() => { meetingIdRef.current = meeting.meetingId; }, [meeting.meetingId]);
 
-  // Track whether we've already sent our own join request this session
-  const sentJoinReqRef = useRef(false);
-
-  const { send: sendJoinResponse } = useDataChannel(JOIN_RESP_TOPIC, (msg) => {
-    // Non-hosts listen for responses addressed to them
-    if (isHost) return;
-    try {
-      const { targetIdentity, allowed } = JSON.parse(new TextDecoder().decode(msg.payload)) as
-        { targetIdentity: string; allowed: boolean };
-      if (targetIdentity !== localParticipant?.identity) return;
-      if (!allowed) {
-        toast.error('The host did not allow you to join this meeting.');
-        // Disconnect after a short delay so the toast is visible
-        setTimeout(() => onLeave(), 1500);
-      }
-    } catch { /* ignore */ }
-  });
-
-  const { send: sendJoinRequest } = useDataChannel(JOIN_REQ_TOPIC, (msg) => {
-    // Only the host processes incoming join requests
-    if (!isHost) return;
-    try {
-      const { identity, name: requesterName } = JSON.parse(new TextDecoder().decode(msg.payload)) as
-        { identity: string; name: string };
-      // Show a persistent toast the host can act on
-      toast(`${requesterName} wants to join`, {
-        duration: 30_000,
-        action: {
-          label: 'Allow',
-          onClick: () => {
-            const payload = new TextEncoder().encode(
-              JSON.stringify({ targetIdentity: identity, allowed: true }),
-            );
-            sendJoinResponse(payload, {});
-          },
-        },
-        cancel: {
-          label: 'Deny',
-          onClick: () => {
-            const payload = new TextEncoder().encode(
-              JSON.stringify({ targetIdentity: identity, allowed: false }),
-            );
-            sendJoinResponse(payload, {});
-          },
-        },
-      });
-    } catch { /* ignore */ }
-  });
-
-  // Non-hosts broadcast a join request once when connected
   useEffect(() => {
-    if (isHost) return;
-    if (connState !== ConnectionState.Connected) return;
-    if (sentJoinReqRef.current) return;
-    sentJoinReqRef.current = true;
-    const name = resolveDisplayName(localParticipant?.name, localParticipant?.identity);
-    const payload = new TextEncoder().encode(
-      JSON.stringify({ identity: localParticipant?.identity, name }),
-    );
-    sendJoinRequest(payload, {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connState, isHost]);
+    if (!isHost) return;
+    let active = true;
+    let timerId: ReturnType<typeof setTimeout>;
+
+    const poll = async () => {
+      try {
+        const requests = await meetingClientService.getPendingJoinRequests(meetingIdRef.current);
+        if (!active) return;
+        for (const request of requests) {
+          if (notifiedJoinRequestsRef.current.has(request.userId)) continue;
+          notifiedJoinRequestsRef.current.add(request.userId);
+          toast(`${request.name} wants to join`, {
+            duration: Infinity,
+            action: {
+              label: 'Allow',
+              onClick: async () => {
+                // Remove from tracked set — if this user re-requests later, host gets a new toast
+                notifiedJoinRequestsRef.current.delete(request.userId);
+                try {
+                  await meetingClientService.decideJoinRequest(meetingIdRef.current, request.userId, true);
+                  toast.success(`${request.name} was allowed into the meeting`);
+                } catch (err) { toast.error((err as Error).message || 'Could not approve join request'); }
+              },
+            },
+            cancel: {
+              label: 'Deny',
+              onClick: async () => {
+                // Remove so a re-request triggers a fresh notification
+                notifiedJoinRequestsRef.current.delete(request.userId);
+                try {
+                  await meetingClientService.decideJoinRequest(meetingIdRef.current, request.userId, false);
+                  toast.message(`${request.name}'s join request was denied`);
+                } catch (err) { toast.error((err as Error).message || 'Could not deny join request'); }
+              },
+            },
+          });
+        }
+      } catch { /* transient — next poll will retry */ }
+      // Always poll at a steady 2 s so the host gets near-instant notifications.
+      // No backoff here — this is an approval gate, latency matters.
+      if (active) timerId = setTimeout(poll, 2000);
+    };
+
+    void poll();
+    return () => { active = false; clearTimeout(timerId); };
+  }, [isHost]);
 
   const handleEndMeeting = useCallback(async () => {
     if (!window.confirm('End this meeting for everyone?')) return;
@@ -541,15 +568,27 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
   const activeScreenShare = allScreenShareTracks[0] as TrackReferenceOrPlaceholder | undefined;
   const screenShareActive = !!activeScreenShare;
 
-  const cameraByIdentity = new Map<string, TrackReferenceOrPlaceholder>();
-  for (const ref of allCameraTracks) cameraByIdentity.set(ref.participant.identity, ref);
+  // Memoised identity maps — only rebuild when the underlying track arrays change.
+  // Without useMemo these Maps are reconstructed on EVERY render (e.g. mic toggle,
+  // speaking indicator tick), causing all child tiles to re-render unnecessarily.
+  const cameraByIdentity = useMemo(() => {
+    const map = new Map<string, TrackReferenceOrPlaceholder>();
+    for (const ref of allCameraTracks) map.set(ref.participant.identity, ref);
+    return map;
+  }, [allCameraTracks]);
 
-  const micByIdentity = new Map<string, TrackReferenceOrPlaceholder>();
-  for (const ref of allMicTracks) micByIdentity.set(ref.participant.identity, ref);
+  const micByIdentity = useMemo(() => {
+    const map = new Map<string, TrackReferenceOrPlaceholder>();
+    for (const ref of allMicTracks) map.set(ref.participant.identity, ref);
+    return map;
+  }, [allMicTracks]);
 
   // Screen share per-identity — used by participant panel to show indicator
-  const screenShareByIdentity = new Map<string, true>();
-  for (const ref of allScreenShareTracks) screenShareByIdentity.set(ref.participant.identity, true);
+  const screenShareByIdentity = useMemo(() => {
+    const map = new Map<string, true>();
+    for (const ref of allScreenShareTracks) map.set(ref.participant.identity, true);
+    return map;
+  }, [allScreenShareTracks]);
 
   if (connState === ConnectionState.Connecting) {
     return (
@@ -586,7 +625,7 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
         <div className="flex items-center gap-3 shrink-0">
           <div className="hidden sm:flex items-center gap-1.5 text-xs text-muted-foreground">
             <Clock className="w-3.5 h-3.5" />
-            <span className="font-mono tabular-nums">{duration}</span>
+            <DurationClock running={isConnected} />
           </div>
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Users className="w-3.5 h-3.5" /><span>{participants.length}</span>
@@ -613,25 +652,17 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           {screenShareActive && activeScreenShare ? (
             <div className="flex flex-col md:flex-row flex-1 overflow-hidden bg-black">
-              {/* Screen share primary stage */}
-              <div className="flex-1 relative bg-black flex items-center justify-center min-h-0 p-2">
-                {'publication' in activeScreenShare && activeScreenShare.publication ? (
-                  <VideoTrack
-                    trackRef={activeScreenShare}
-                    style={{ objectFit: 'contain', width: '100%', height: '100%' }}
-                  />
-                ) : (
-                  <div className="flex flex-col items-center gap-3 text-white/50">
-                    <Monitor className="w-16 h-16" />
-                    <span className="text-sm">Loading screen share…</span>
-                  </div>
-                )}
-                {/* Sharer name */}
-                <div className="absolute top-3 left-3 px-2 py-1 rounded-md bg-black/60 text-white text-xs font-medium backdrop-blur-sm flex items-center gap-1.5">
-                  <Monitor className="w-3 h-3" />
-                  {resolveDisplayName(activeScreenShare.participant.name, activeScreenShare.participant.identity)}
-                  {localIsSharing && activeScreenShare.participant.identity === localParticipant?.identity ? ' (You)' : ''}
-                </div>
+              {/* Screen share primary stage — uses ScreenShareView which guards isMuted */}
+              <div className="flex-1 min-h-0">
+                <ScreenShareView
+                  screenShareTrackRef={activeScreenShare}
+                  sharerName={
+                    resolveDisplayName(activeScreenShare.participant.name, activeScreenShare.participant.identity) +
+                    (localIsSharing && activeScreenShare.participant.identity === localParticipant?.identity ? ' (You)' : '')
+                  }
+                  isLocalSharer={localIsSharing && activeScreenShare.participant.identity === localParticipant?.identity}
+                  onStopShare={handleScreenShare}
+                />
               </div>
               {/* Thumbnail sidebar */}
               <div className="shrink-0 h-32 md:h-auto md:w-64 lg:w-72 bg-zinc-950 flex md:flex-col gap-2 p-2 md:p-3 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto border-t md:border-t-0 md:border-l border-white/10 transition-all duration-300 ease-in-out">
@@ -659,7 +690,6 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
                 cameraByIdentity={cameraByIdentity}
                 micByIdentity={micByIdentity}
                 localCameraEnabled={cameraEnabled}
-                raisedHands={raisedHands}
               />
             </div>
           )}
@@ -674,7 +704,6 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
             micByIdentity={micByIdentity}
             cameraByIdentity={cameraByIdentity}
             screenShareByIdentity={screenShareByIdentity}
-            raisedHands={raisedHands}
             onClose={() => setShowPanel(null)}
           />
         )}
@@ -687,6 +716,17 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
             onSend={sendChatMessage}
             isSending={chatSending}
             onClose={() => setShowPanel(null)}
+          />
+        )}
+
+        {/* Whiteboard panel */}
+        {showPanel === 'whiteboard' && (
+          <WhiteboardPanel
+            meetingId={meeting.meetingId}
+            onClose={() => setShowPanel(null)}
+            isHost={isHost}
+            whiteboardLocked={whiteboardLocked}
+            onToggleLock={toggleWhiteboardLock}
           />
         )}
 
@@ -736,6 +776,11 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
             activeLabel="Stop share" inactiveLabel="Share screen"
             onToggle={handleScreenShare} disabled={screenPending} />
         )}
+        <ControlButton active={showPanel === 'whiteboard'}
+          activeIcon={<PenTool className="w-5 h-5" />}
+          inactiveIcon={<PenTool className="w-5 h-5" />}
+          activeLabel="Hide whiteboard" inactiveLabel="Whiteboard"
+          onToggle={() => togglePanel('whiteboard')} highlight={showPanel === 'whiteboard'} />
         <ControlButton active={showPanel === 'participants'}
           activeIcon={<Users className="w-5 h-5" />}
           inactiveIcon={<Users className="w-5 h-5" />}
@@ -772,23 +817,7 @@ function RoomContent({ meeting, onLeave, hostUserId }: { meeting: MeetingInfo; o
             {showPanel === 'chat' ? 'Hide chat' : 'Chat'}
           </span>
         </div>
-        {/* Raise hand button */}
-        <div className="flex flex-col items-center gap-1">
-          <Button
-            variant={localHandRaised ? 'default' : 'outline'}
-            className={`w-12 h-12 rounded-full p-0 flex items-center justify-center transition-colors
-              ${localHandRaised ? 'bg-amber-500 hover:bg-amber-600 text-white border-0' : ''}`}
-            onClick={handleRaiseHand}
-            title={localHandRaised ? 'Lower hand' : 'Raise hand'}
-            aria-label={localHandRaised ? 'Lower hand' : 'Raise hand'}
-            aria-pressed={localHandRaised}
-          >
-            <Hand className="w-5 h-5" />
-          </Button>
-          <span className="text-[10px] text-muted-foreground hidden sm:block">
-            {localHandRaised ? 'Lower' : 'Raise hand'}
-          </span>
-        </div>
+
         {/* Host controls button — host only */}
         {isHost && (
           <div className="flex flex-col items-center gap-1">
@@ -852,13 +881,12 @@ function ThumbnailTile({ participant, cameraRef, micRef, isLocal, localCameraEna
 
 // ─── Video grid ───────────────────────────────────────────────────────────────
 
-function VideoGrid({ participants, localParticipant, cameraByIdentity, micByIdentity, localCameraEnabled, raisedHands }: {
+function VideoGrid({ participants, localParticipant, cameraByIdentity, micByIdentity, localCameraEnabled }: {
   participants: Participant[];
   localParticipant: Participant | undefined;
   cameraByIdentity: Map<string, TrackReferenceOrPlaceholder>;
   micByIdentity: Map<string, TrackReferenceOrPlaceholder>;
   localCameraEnabled: boolean;
-  raisedHands: Set<string>;
 }) {
   const count = participants.length;
   const gridClass = count <= 1 ? 'grid-cols-1' : count === 2 ? 'grid-cols-1 sm:grid-cols-2' : count <= 4 ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-3';
@@ -877,8 +905,7 @@ function VideoGrid({ participants, localParticipant, cameraByIdentity, micByIden
             cameraRef={cameraByIdentity.get(participant.identity)}
             micRef={micByIdentity.get(participant.identity)}
             isLocal={isLocal}
-            localCameraEnabled={isLocal ? localCameraEnabled : undefined}
-            handRaised={raisedHands.has(participant.identity)} />
+            localCameraEnabled={isLocal ? localCameraEnabled : undefined} />
         );
       })}
     </div>
@@ -887,13 +914,12 @@ function VideoGrid({ participants, localParticipant, cameraByIdentity, micByIden
 
 // ─── Participant tile ─────────────────────────────────────────────────────────
 
-function ParticipantTile({ participant, cameraRef, micRef, isLocal, localCameraEnabled, handRaised }: {
+function ParticipantTile({ participant, cameraRef, micRef, isLocal, localCameraEnabled }: {
   participant: Participant;
   cameraRef: TrackReferenceOrPlaceholder | undefined;
   micRef: TrackReferenceOrPlaceholder | undefined;
   isLocal: boolean;
   localCameraEnabled: boolean | undefined;
-  handRaised?: boolean;
 }) {
   const { name, identity } = useParticipantInfo({ participant });
   const isSpeaking         = useIsSpeaking(participant);
@@ -918,12 +944,6 @@ function ParticipantTile({ participant, cameraRef, micRef, isLocal, localCameraE
         </div>
       )}
       {isSpeaking && <div className="absolute inset-0 rounded-xl ring-2 ring-emerald-400 pointer-events-none" />}
-      {/* Raised hand badge — top-right corner */}
-      {handRaised && (
-        <div className="absolute top-6 right-4 w-12 h-12 rounded-full bg-amber-500 flex items-center justify-center shadow-lg animate-bounce" title="Hand raised">
-          <span className="text-base leading-none select-none">✋</span>
-        </div>
-      )}
       <div className="absolute bottom-0 left-0 right-0 px-3 py-2 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent">
         <span className="text-white text-xs font-medium truncate max-w-[75%]">{isLocal ? `${label} (You)` : label}</span>
         <span className={`flex items-center justify-center w-6 h-6 rounded-full ${micMuted ? 'bg-red-500/80' : 'bg-white/10'}`} title={micMuted ? 'Muted' : 'Mic on'}>
@@ -978,7 +998,6 @@ function ParticipantPanel({
   micByIdentity,
   cameraByIdentity,
   screenShareByIdentity,
-  raisedHands,
   onClose,
 }: {
   participants: Participant[];
@@ -987,18 +1006,8 @@ function ParticipantPanel({
   micByIdentity: Map<string, TrackReferenceOrPlaceholder>;
   cameraByIdentity: Map<string, TrackReferenceOrPlaceholder>;
   screenShareByIdentity: Map<string, true>;
-  raisedHands: Set<string>;
   onClose: () => void;
 }) {
-  // Sort: raised hands first, then everyone else (stable — preserves join order within each group)
-  const sorted = [...participants].sort((a, b) => {
-    const aRaised = raisedHands.has(a.identity) ? 0 : 1;
-    const bRaised = raisedHands.has(b.identity) ? 0 : 1;
-    return aRaised - bRaised;
-  });
-
-  const raisedCount = raisedHands.size;
-
   return (
     <aside
       className="
@@ -1017,11 +1026,6 @@ function ParticipantPanel({
             People
             <span className="ml-1.5 text-muted-foreground font-normal">({participants.length})</span>
           </span>
-          {raisedCount > 0 && (
-            <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-amber-600 bg-amber-500/10 rounded-full px-1.5 py-0.5">
-              ✋ {raisedCount}
-            </span>
-          )}
         </div>
         <button
           onClick={onClose}
@@ -1034,10 +1038,10 @@ function ParticipantPanel({
 
       {/* List */}
       <div className="flex-1 overflow-y-auto py-2">
-        {sorted.length === 0 ? (
+        {participants.length === 0 ? (
           <p className="text-center text-muted-foreground text-sm py-8">No participants yet</p>
         ) : (
-          sorted.map((participant) => (
+          participants.map((participant) => (
             <PanelRow
               key={participant.identity}
               participant={participant}
@@ -1046,7 +1050,6 @@ function ParticipantPanel({
               micRef={micByIdentity.get(participant.identity)}
               cameraRef={cameraByIdentity.get(participant.identity)}
               isScreenSharing={screenShareByIdentity.has(participant.identity)}
-              isHandRaised={raisedHands.has(participant.identity)}
             />
           ))
         )}
@@ -1065,7 +1068,6 @@ function PanelRow({
   micRef,
   cameraRef,
   isScreenSharing,
-  isHandRaised,
 }: {
   participant: Participant;
   isLocal: boolean;
@@ -1073,7 +1075,6 @@ function PanelRow({
   micRef: TrackReferenceOrPlaceholder | undefined;
   cameraRef: TrackReferenceOrPlaceholder | undefined;
   isScreenSharing: boolean;
-  isHandRaised: boolean;
 }) {
   const { name, identity } = useParticipantInfo({ participant });
   const isSpeaking         = useIsSpeaking(participant);
@@ -1089,18 +1090,14 @@ function PanelRow({
   const abbr  = makeInitials(label);
 
   return (
-    <div className={`flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40 transition-colors ${isHandRaised ? 'bg-amber-500/5' : ''}`}>
-      {/* Avatar with speaking / hand-raised ring */}
-      <div className={`relative shrink-0 rounded-full p-0.5 transition-colors ${isHandRaised ? 'bg-amber-400' : isSpeaking ? 'bg-emerald-400' : 'bg-transparent'}`}>
+    <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40 transition-colors">
+      {/* Avatar with speaking ring */}
+      <div className={`relative shrink-0 rounded-full p-0.5 transition-colors ${isSpeaking ? 'bg-emerald-400' : 'bg-transparent'}`}>
         <Avatar className="w-8 h-8">
           <AvatarFallback className="bg-muted text-foreground text-xs font-semibold">
             {abbr}
           </AvatarFallback>
         </Avatar>
-        {/* Hand raised emoji overlay */}
-        {isHandRaised && (
-          <span className="absolute -top-1 -right-1 text-sm leading-none select-none">✋</span>
-        )}
       </div>
 
       {/* Name + badges */}
@@ -1112,11 +1109,6 @@ function PanelRow({
           {isHost && (
             <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-500 bg-amber-500/10 rounded px-1 py-0.5 shrink-0">
               <Crown className="w-2.5 h-2.5" />Host
-            </span>
-          )}
-          {isHandRaised && (
-            <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-600 bg-amber-500/10 rounded px-1 py-0.5 shrink-0">
-              Hand raised
             </span>
           )}
         </div>
@@ -1460,6 +1452,598 @@ function HostControlsPanel({
           )}
         </section>
 
+      </div>
+    </aside>
+  );
+}
+
+
+// ─── Whiteboard Panel ────────────────────────────────────────────────────────
+// Collaborative whiteboard with undo/redo, auto-save, keyboard shortcuts,
+// empty/loading states, and accessibility attributes.
+
+const MAX_UNDO_STACK = 50;
+const DRAW_THROTTLE_MS = 50;
+const SAVE_DEBOUNCE_MS = 2000;
+
+type DrawPoint = {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+  color: string;
+  size: number;
+  eraser: boolean;
+};
+
+type WbMessage =
+  | { type: 'drawBatch'; points: DrawPoint[]; seq: number; sender: string }
+  | { type: 'clear'; sender: string }
+  | { type: 'lock'; locked: boolean; sender: string }
+  | { type: 'snapshot'; dataUrl: string; sender: string };
+
+function WhiteboardPanel({
+  meetingId,
+  onClose,
+  isHost,
+  whiteboardLocked,
+  onToggleLock,
+}: {
+  meetingId: string;
+  onClose: () => void;
+  isHost: boolean;
+  whiteboardLocked: boolean;
+  onToggleLock: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { localParticipant } = useLocalParticipant();
+
+  // ── Panel resize ────────────────────────────────────────────────────────
+  const [panelWidth, setPanelWidth] = useState(400);
+  const isDraggingPanel = useRef(false);
+
+  const startPanelDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDraggingPanel.current = true;
+    document.body.style.cursor = 'col-resize';
+    const onMove = (ev: MouseEvent) => {
+      if (!isDraggingPanel.current) return;
+      const w = document.body.clientWidth - ev.clientX;
+      if (w >= 320 && w <= 900) setPanelWidth(w);
+    };
+    const onUp = () => {
+      isDraggingPanel.current = false;
+      document.body.style.cursor = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
+
+  // ── Tool state ──────────────────────────────────────────────────────────
+  const [color, setColor] = useState('#000000'); // default pen color black
+  const [brushSize, setBrushSize] = useState(3);
+  const [isEraser, setIsEraser] = useState(false);
+  // isLockedLocal is initialised from the prop once. After that it is owned by:
+  //  a) handleToggleLock (local user toggles), b) applyMsg 'lock' (remote peer toggles).
+  // The parent's whiteboardLocked prop is only used for the initial value — it doesn't
+  // need to be re-synced because every mutation goes through the data channel anyway.
+  const [isLockedLocal, setIsLockedLocal] = useState(whiteboardLocked);
+
+  const canDraw = !isLockedLocal || isHost;
+
+  // ── Undo / Redo stacks (ImageData snapshots) ────────────────────────────
+  const undoStack = useRef<ImageData[]>([]);
+  const redoStack = useRef<ImageData[]>([]);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  const syncStackState = useCallback(() => {
+    setCanUndo(undoStack.current.length > 0);
+    setCanRedo(redoStack.current.length > 0);
+  }, []);
+
+  /** Snapshot the current canvas onto the undo stack. Called before each stroke starts. */
+  const pushUndo = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    undoStack.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    if (undoStack.current.length > MAX_UNDO_STACK) undoStack.current.shift();
+    redoStack.current = [];
+    syncStackState();
+  }, [syncStackState]);
+
+  // ── Data channel ────────────────────────────────────────────────────────
+  const seenSeqs = useRef<Set<number>>(new Set());
+
+  const applyMsg = useCallback((data: WbMessage) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    if (data.type === 'drawBatch') {
+      if (seenSeqs.current.has(data.seq)) return;
+      seenSeqs.current.add(data.seq);
+      data.points.forEach((pt) => {
+        ctx.beginPath();
+        ctx.moveTo(pt.from.x, pt.from.y);
+        ctx.lineTo(pt.to.x, pt.to.y);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        if (pt.eraser) {
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.lineWidth = pt.size * 3;
+        } else {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.strokeStyle = pt.color;
+          ctx.lineWidth = pt.size;
+        }
+        ctx.stroke();
+      });
+    } else if (data.type === 'clear') {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      undoStack.current = [];
+      redoStack.current = [];
+      syncStackState();
+    } else if (data.type === 'lock') {
+      if (typeof data.locked === 'boolean') setIsLockedLocal(data.locked);
+    } else if (data.type === 'snapshot') {
+      // Undo/redo sync: restore canvas to broadcast snapshot
+      const dpr = window.devicePixelRatio || 1;
+      const img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(img, 0, 0, canvas.width / dpr, canvas.height / dpr);
+      };
+      img.src = data.dataUrl;
+    }
+  }, [syncStackState]);
+
+  const { send: sendWb } = useDataChannel('whiteboard', (msg) => {
+    try {
+      const data = JSON.parse(new TextDecoder().decode(msg.payload)) as WbMessage;
+      if (data.sender === localParticipant?.identity) return; // echo guard
+      applyMsg(data);
+    } catch { /* malformed — ignore */ }
+  });
+
+  const broadcast = useCallback((payload: WbMessage) => {
+    sendWb(new TextEncoder().encode(JSON.stringify(payload)), {});
+  }, [sendWb]);
+
+  // ── Persist — debounced auto-save ──────────────────────────────────────
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'error'>('idle');
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedRef = useRef<string>('');
+  // Store triggerSave in a ref so the retry toast can call the latest version
+  // without creating a circular dependency in useCallback's dep array.
+  const triggerSaveRef = useRef<() => void>(() => undefined);
+
+  const triggerSave = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const dataUrl = canvas.toDataURL('image/png');
+      if (dataUrl === lastSavedRef.current) return;
+      setSaveState('saving');
+      try {
+        await meetingClientService.saveWhiteboard(meetingId, dataUrl);
+        lastSavedRef.current = dataUrl;
+        setSaveState('idle');
+      } catch {
+        setSaveState('error');
+        toast.error('Whiteboard save failed — changes may be lost', {
+          action: { label: 'Retry', onClick: () => triggerSaveRef.current() },
+        });
+      }
+    }, SAVE_DEBOUNCE_MS);
+  }, [meetingId]);
+
+  // Keep triggerSaveRef current so the retry toast callback always invokes
+  // the latest closure without adding triggerSave to its own dep array.
+  useEffect(() => {
+    triggerSaveRef.current = triggerSave;
+  });
+
+  // ── Load saved board on mount ───────────────────────────────────────────
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  // hasDrawnOnce drives the empty-state hint — declared here so the load callback can set it.
+  const [hasDrawnOnce, setHasDrawnOnce] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    meetingClientService.loadWhiteboard(meetingId)
+      .then((dataUrl) => {
+        if (cancelled) return;
+        if (!dataUrl) { setLoadState('ready'); return; }
+        const canvas = canvasRef.current;
+        if (!canvas) { setLoadState('ready'); return; }
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { setLoadState('ready'); return; }
+        const img = new Image();
+        img.onload = () => {
+          if (!cancelled) {
+            const dpr = window.devicePixelRatio || 1;
+            ctx.drawImage(img, 0, 0, canvas.width / dpr, canvas.height / dpr);
+            lastSavedRef.current = dataUrl;
+            setHasDrawnOnce(true);
+            setLoadState('ready');
+          }
+        };
+        img.onerror = () => { if (!cancelled) setLoadState('ready'); };
+        img.src = dataUrl;
+      })
+      .catch(() => { if (!cancelled) { setLoadState('error'); } });
+    return () => { cancelled = true; };
+  }, [meetingId]);
+
+  // ── Drawing ─────────────────────────────────────────────────────────────
+  const isDrawing = useRef(false);
+  const lastPos = useRef<{ x: number; y: number } | null>(null);
+  const drawBuffer = useRef<DrawPoint[]>([]);
+
+  // Flush draw buffer to peers at fixed interval
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (drawBuffer.current.length === 0) return;
+      const points = drawBuffer.current.splice(0);
+      broadcast({ type: 'drawBatch', points, seq: Date.now(), sender: localParticipant?.identity ?? '' });
+    }, DRAW_THROTTLE_MS);
+    return () => clearInterval(id);
+  }, [broadcast, localParticipant?.identity]);
+
+  // Abort drawing when pointer leaves window
+  useEffect(() => {
+    const abort = () => { isDrawing.current = false; lastPos.current = null; };
+    window.addEventListener('pointerup', abort);
+    window.addEventListener('pointercancel', abort);
+    return () => {
+      window.removeEventListener('pointerup', abort);
+      window.removeEventListener('pointercancel', abort);
+    };
+  }, []);
+
+  const getCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!canDraw) return;
+    pushUndo(); // snapshot before stroke so undo restores pre-stroke state
+    isDrawing.current = true;
+    if (!hasDrawnOnce) setHasDrawnOnce(true);
+    lastPos.current = getCoords(e);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawing.current || !lastPos.current || !canDraw) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const cur = getCoords(e);
+    ctx.beginPath();
+    ctx.moveTo(lastPos.current.x, lastPos.current.y);
+    ctx.lineTo(cur.x, cur.y);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (isEraser) {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.lineWidth = brushSize * 3;
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = color;
+      ctx.lineWidth = brushSize;
+    }
+    ctx.stroke();
+    drawBuffer.current.push({ from: lastPos.current, to: cur, color, size: brushSize, eraser: isEraser });
+    lastPos.current = cur;
+  };
+
+  const handlePointerUp = () => {
+    isDrawing.current = false;
+    lastPos.current = null;
+    triggerSave();
+  };
+
+  // ── Undo ────────────────────────────────────────────────────────────────
+  const performUndo = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || undoStack.current.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    redoStack.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    ctx.putImageData(undoStack.current.pop()!, 0, 0);
+    syncStackState();
+    const dataUrl = canvas.toDataURL('image/png');
+    broadcast({ type: 'snapshot', dataUrl, sender: localParticipant?.identity ?? '' });
+    triggerSave();
+  }, [syncStackState, broadcast, localParticipant?.identity, triggerSave]);
+
+  // ── Redo ────────────────────────────────────────────────────────────────
+  const performRedo = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || redoStack.current.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    undoStack.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    ctx.putImageData(redoStack.current.pop()!, 0, 0);
+    syncStackState();
+    const dataUrl = canvas.toDataURL('image/png');
+    broadcast({ type: 'snapshot', dataUrl, sender: localParticipant?.identity ?? '' });
+    triggerSave();
+  }, [syncStackState, broadcast, localParticipant?.identity, triggerSave]);
+
+  // ── Clear canvas (host only) ────────────────────────────────────────────
+  const clearCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    pushUndo();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    undoStack.current = [];
+    redoStack.current = [];
+    syncStackState();
+    broadcast({ type: 'clear', sender: localParticipant?.identity ?? '' });
+    triggerSave();
+  }, [pushUndo, syncStackState, broadcast, localParticipant?.identity, triggerSave]);
+
+  // ── Lock toggle (host only) ─────────────────────────────────────────────
+  const handleToggleLock = useCallback(() => {
+    const next = !isLockedLocal;
+    setIsLockedLocal(next);
+    onToggleLock();
+    broadcast({ type: 'lock', locked: next, sender: localParticipant?.identity ?? '' });
+  }, [isLockedLocal, onToggleLock, broadcast, localParticipant?.identity]);
+
+  // ── Canvas resize — preserve content and allow scrolling ────────────────────────
+  const CANVAS_SIZE = 2000; // Fixed large canvas for scrolling
+  const isFirstMount = useRef(true);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Snapshot existing pixels before resizing (avoid expensive toDataURL)
+    let prevImageData: ImageData | null = null;
+    const wasAlreadySetup = !isFirstMount.current;
+    if (wasAlreadySetup && canvas.width > 0 && canvas.height > 0) {
+      try {
+        prevImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      } catch { /* cross-origin / security error — skip restore */ }
+    }
+    isFirstMount.current = false;
+
+    const dpr = window.devicePixelRatio || 1;
+    // Set a fixed large logical size, then scale for device pixel ratio
+    canvas.width = CANVAS_SIZE * dpr;
+    canvas.height = CANVAS_SIZE * dpr;
+    canvas.style.width = `${CANVAS_SIZE}px`;
+    canvas.style.height = `${CANVAS_SIZE}px`;
+    ctx.scale(dpr, dpr);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    // Restore previous drawing if any — putImageData is synchronous and cheap
+    if (prevImageData) {
+      ctx.putImageData(prevImageData, 0, 0);
+    }
+  }, [panelWidth]);
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); performUndo(); }
+      else if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); performRedo(); }
+      else if (!meta && e.key === 'e') setIsEraser(true);
+      else if (!meta && e.key === 'p') setIsEraser(false);
+      else if (!meta && e.key === 'Delete' && isHost) clearCanvas();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [performUndo, performRedo, clearCanvas, isHost]);
+
+// ── Cleanup ─────────────────────────────────────────────────────────────
+useEffect(() => {
+  return () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    document.body.style.cursor = '';
+    if (saveState !== 'saving') {
+      triggerSave();
+    }
+  };
+}, [triggerSave, saveState]);
+
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 640;
+
+  return (
+    <aside
+      style={!isMobile ? { width: `${panelWidth}px` } : undefined}
+      className="w-full shrink-0 border-l bg-background flex flex-col fixed inset-y-0 right-0 z-30 sm:static sm:inset-auto sm:z-auto relative"
+      aria-label="Whiteboard panel"
+    >
+      {/* Resize handle — desktop only */}
+      <div
+        className="hidden sm:block absolute top-0 bottom-0 left-0 w-1.5 -ml-[3px] cursor-col-resize hover:bg-primary/50 z-40 transition-colors"
+        onMouseDown={startPanelDrag}
+        aria-hidden="true"
+        title="Drag to resize"
+      />
+
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <PenTool className="w-4 h-4 text-muted-foreground shrink-0" aria-hidden="true" />
+          <span className="font-semibold text-sm">Whiteboard</span>
+          {isLockedLocal && !isHost && (
+            <span className="text-[10px] text-amber-500 bg-amber-500/10 rounded px-1.5 py-0.5 font-semibold shrink-0">
+              Locked
+            </span>
+          )}
+          {saveState === 'saving' && (
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1 shrink-0">
+              <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+              Saving…
+            </span>
+          )}
+          {saveState === 'error' && (
+            <span className="text-[10px] text-destructive shrink-0">Unsaved</span>
+          )}
+
+           {/* Host-only: lock + clear */}
+        {isHost && (
+          <>
+            <div className="w-px h-6 bg-border" aria-hidden="true" />
+            <Button
+              variant={isLockedLocal ? 'default' : 'outline'} size="sm"
+              onClick={handleToggleLock}
+              className="h-8 w-8 p-0"
+              aria-label={isLockedLocal ? 'Unlock whiteboard' : 'Lock whiteboard for participants'}
+              aria-pressed={isLockedLocal}
+              title={isLockedLocal ? 'Unlock whiteboard' : 'Lock whiteboard'}
+            >
+              <Lock className="w-4 h-4" aria-hidden="true" />
+            </Button>
+            <Button
+              variant="outline" size="sm" onClick={clearCanvas}
+              className="h-8 w-8 p-0 text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/20"
+              aria-label="Clear whiteboard (Delete key)" title="Clear whiteboard (Delete)">
+              <Trash2 className="w-4 h-4" aria-hidden="true" />
+            </Button>
+          </>
+        )}
+        </div>
+        <button
+          onClick={onClose}
+          className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+          aria-label="Close whiteboard"
+        >
+          <X className="w-4 h-4" aria-hidden="true" />
+        </button>
+      </div>
+
+      {/* Toolbar */}
+      <div
+        role="toolbar"
+        aria-label="Whiteboard tools"
+        className="flex items-center gap-1.5 px-3 py-2 border-b shrink-0 bg-muted/20 flex-wrap"
+      >
+        {/* Undo */}
+        <Button variant="outline" size="sm" onClick={performUndo} disabled={!canUndo}
+          className="h-8 w-8 p-0" aria-label="Undo (Ctrl+Z)" title="Undo (Ctrl+Z)">
+          <Undo2 className="w-4 h-4" aria-hidden="true" />
+        </Button>
+
+        {/* Redo */}
+        <Button variant="outline" size="sm" onClick={performRedo} disabled={!canRedo}
+          className="h-8 w-8 p-0" aria-label="Redo (Ctrl+Y)" title="Redo (Ctrl+Y)">
+          <Redo2 className="w-4 h-4" aria-hidden="true" />
+        </Button>
+
+        <div className="w-px h-6 bg-border" aria-hidden="true" />
+
+        {/* Pen */}
+        <Button variant={!isEraser ? 'default' : 'outline'} size="sm"
+          onClick={() => setIsEraser(false)}
+          className="h-8 w-8 p-0" aria-label="Pen (P)" aria-pressed={!isEraser} title="Pen (P)">
+          <PenTool className="w-4 h-4" aria-hidden="true" />
+        </Button>
+
+        {/* Eraser */}
+        <Button variant={isEraser ? 'default' : 'outline'} size="sm"
+          onClick={() => setIsEraser(true)}
+          className="h-8 w-8 p-0" aria-label="Eraser (E)" aria-pressed={isEraser} title="Eraser (E)">
+          <Eraser className="w-4 h-4" aria-hidden="true" />
+        </Button>
+
+        <div className="w-px h-6 bg-border" aria-hidden="true" />
+
+        {/* Color — accessible label wraps the native input */}
+        <label title="Stroke colour" aria-label="Stroke colour" className="cursor-pointer">
+          <input type="color" value={color} onChange={(e) => setColor(e.target.value)}
+            disabled={isEraser} className="sr-only" />
+          <span
+            className="block w-7 h-7 rounded border-2 border-border hover:border-primary transition-colors"
+            style={{ backgroundColor: isEraser ? 'transparent' : color }}
+            aria-hidden="true"
+          />
+        </label>
+
+        {/* Brush size + live preview dot */}
+        <div className="flex items-center gap-1.5 min-w-[90px] flex-1">
+          <span className="text-[10px] text-muted-foreground tabular-nums w-6">{brushSize}px</span>
+          <input type="range" min="1" max="20" value={brushSize}
+            onChange={(e) => setBrushSize(parseInt(e.target.value))}
+            className="flex-1 cursor-pointer accent-primary"
+            aria-label={`Brush size: ${brushSize} pixels`} title="Brush size" />
+          <span
+            className="rounded-full shrink-0 transition-all"
+            style={{
+              width: `${Math.max(4, brushSize)}px`,
+              height: `${Math.max(4, brushSize)}px`,
+              backgroundColor: isEraser ? 'var(--muted-foreground)' : color,
+            }}
+            aria-hidden="true"
+          />
+        </div>
+
+
+      </div>
+
+      {/* Canvas container */}
+      <div className="flex-1 relative overflow-auto bg-white touch-none" style={{ overflow: 'auto' }}>
+
+        {/* Loading overlay */}
+        {loadState === 'loading' && (
+          <div className="absolute inset-0 flex items-center justify-center bg-zinc-950 z-10" aria-live="polite">
+            <div className="flex flex-col items-center gap-2 text-zinc-400">
+              <Loader2 className="w-6 h-6 animate-spin" aria-hidden="true" />
+              <span className="text-xs">Restoring board…</span>
+            </div>
+          </div>
+        )}
+
+        {/* Load-error state */}
+        {loadState === 'error' && (
+          <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/90 z-10 p-4" aria-live="assertive">
+            <div className="flex flex-col items-center gap-3 text-center max-w-xs">
+              <span className="text-xs text-zinc-400">Could not load the saved board. You can still draw — changes will save automatically.</span>
+              <Button variant="outline" size="sm" onClick={() => setLoadState('ready')}>Continue anyway</Button>
+            </div>
+          </div>
+        )}
+
+        {/* Empty-state hint */}
+        {loadState === 'ready' && !canUndo && !hasDrawnOnce && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none" aria-hidden="true">
+            <div className="flex flex-col items-center gap-1 text-zinc-600">
+              <PenTool className="w-8 h-8 opacity-25" />
+              <span className="text-xs opacity-50">
+                {canDraw ? 'Start drawing…' : 'Board is locked by the host'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        <canvas
+          ref={canvasRef}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onPointerLeave={handlePointerUp}
+          className={`absolute inset-0 w-full h-full ${canDraw ? 'cursor-crosshair' : 'cursor-not-allowed'}`}
+          role="img"
+          aria-label="Whiteboard canvas — draw with your pointer"
+        />
       </div>
     </aside>
   );

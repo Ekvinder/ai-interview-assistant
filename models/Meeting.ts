@@ -15,6 +15,16 @@ const ParticipantSchema = new Schema(
   { _id: false }
 );
 
+const JoinRequestSchema = new Schema(
+  {
+    user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    status: { type: String, enum: ['pending', 'approved', 'denied'], default: 'pending' },
+    requestedAt: { type: Date, default: Date.now },
+    decidedAt: { type: Date },
+  },
+  { _id: false }
+);
+
 const MeetingSettingsSchema = new Schema(
   {
     allowChat: { type: Boolean, default: true },
@@ -32,6 +42,8 @@ const MeetingSchema = new Schema<IMeeting>(
     meetingId: { type: String, required: true, unique: true, index: true },
     host: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     participants: [ParticipantSchema],
+    // Kept separate from participants: pending guests must not be treated as joined.
+    joinRequests: { type: [JoinRequestSchema], default: [] },
     status: {
       type: String,
       enum: ['scheduled', 'active', 'ended'],
@@ -46,6 +58,8 @@ const MeetingSchema = new Schema<IMeeting>(
     isInstant: { type: Boolean, default: false },
     isPrivate: { type: Boolean, default: false },
     settings: { type: MeetingSettingsSchema, default: () => ({}) },
+    /** Persisted whiteboard: base-64 PNG data URL. Stored outside GridFS to keep it simple. */
+    whiteboardData: { type: String, default: '' },
   },
   { timestamps: true }
 );

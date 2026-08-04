@@ -88,6 +88,13 @@ export interface IParticipant {
   isPresent: boolean;
 }
 
+export interface IJoinRequest {
+  user: Types.ObjectId;
+  status: 'pending' | 'approved' | 'denied';
+  requestedAt: Date;
+  decidedAt?: Date;
+}
+
 export interface IMeetingSettings {
   allowChat: boolean;
   allowMic: boolean;
@@ -101,6 +108,7 @@ export interface IMeeting extends Document {
   meetingId: string;
   host: Types.ObjectId;
   participants: IParticipant[];
+  joinRequests: IJoinRequest[];
   status: MeetingStatus;
   scheduledFor?: Date;
   startedAt?: Date;
@@ -110,6 +118,8 @@ export interface IMeeting extends Document {
   isInstant: boolean;
   isPrivate: boolean;
   settings: IMeetingSettings;
+  /** Base-64 PNG data URL of the persisted whiteboard. Empty string when never saved. */
+  whiteboardData?: string;
   createdAt: Date;
   updatedAt: Date;
 }

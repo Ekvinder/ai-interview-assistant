@@ -35,6 +35,8 @@ export async function POST(
 
     // Remove via LiveKit server API
     await livekitClient.removeParticipant(meetingId, participantIdentity);
+    // Make a later rejoin go through host approval again.
+    await MeetingService.leaveMeeting(participantIdentity, meetingId);
 
     return createResponse(true, 'Participant removed', null);
   } catch (error: unknown) {

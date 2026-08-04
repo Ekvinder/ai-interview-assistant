@@ -9,6 +9,9 @@ export interface PaginatedMeetings {
   totalPages: number;
 }
 
+export type JoinRequestStatus = 'pending' | 'approved' | 'denied';
+export interface PendingJoinRequest { userId: string; name: string; requestedAt: string; }
+
 interface PaginatedEnvelope {
   success: boolean;
   message: string;
@@ -54,11 +57,27 @@ export const meetingClientService = {
     });
   },
 
-  joinMeeting: async (meetingId: string): Promise<IMeeting> => {
-    return apiFetch<IMeeting>('/api/meetings/join', {
+  joinMeeting: async (meetingId: string): Promise<{ status: JoinRequestStatus }> => {
+    return apiFetch<{ status: JoinRequestStatus }>('/api/meetings/join', {
       method: 'POST',
       body: JSON.stringify({ meetingId }),
     });
+  },
+
+  getJoinRequestStatus: async (meetingId: string): Promise<JoinRequestStatus> => {
+    const result = await apiFetch<{ status: JoinRequestStatus }>(`/api/meetings/${meetingId}/join-requests`);
+    return result.status;
+  },
+
+  getPendingJoinRequests: async (meetingId: string): Promise<PendingJoinRequest[]> => {
+    return apiFetch<PendingJoinRequest[]>(`/api/meetings/${meetingId}/join-requests`);
+  },
+
+  decideJoinRequest: async (meetingId: string, userId: string, approved: boolean): Promise<JoinRequestStatus> => {
+    const result = await apiFetch<{ status: JoinRequestStatus }>(`/api/meetings/${meetingId}/join-requests`, {
+      method: 'POST', body: JSON.stringify({ userId, approved }),
+    });
+    return result.status;
   },
 
   updateMeeting: async (id: string, payload: Record<string, unknown>): Promise<IMeeting> => {
@@ -99,5 +118,25 @@ export const meetingClientService = {
       method: 'POST',
       body: JSON.stringify({ participantIdentity }),
     });
+  },
+
+  /**
+   * Persist the whiteboard canvas as a PNG data URL.
+   * meetingId = public meetingId string.
+   */
+  saveWhiteboard: async (meetingId: string, dataUrl: string): Promise<void> => {
+    await apiFetch<{ saved: boolean }>(`/api/meetings/${meetingId}/whiteboard`, {
+      method: 'PUT',
+      body: JSON.stringify({ dataUrl }),
+    });
+  },
+
+  /**
+   * Load the previously saved whiteboard data URL for a meeting.
+   * Returns an empty string if the whiteboard has never been saved.
+   */
+  loadWhiteboard: async (meetingId: string): Promise<string> => {
+    const result = await apiFetch<{ whiteboardData: string }>(`/api/meetings/${meetingId}/whiteboard`);
+    return result.whiteboardData ?? '';
   },
 };

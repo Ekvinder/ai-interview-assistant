@@ -57,7 +57,11 @@ if (!global.__geminiSessions) {
 
 const store = global.__geminiSessions;
 
-const LIVE_MODEL = 'gemini-3.1-flash-live-preview';
+const LIVE_MODEL = 'gemini-2.0-flash-live-preview';
+
+// Reuse a single GoogleGenAI client for all sessions — avoids re-initialising
+// the SDK (and its internal HTTP agent) on every new interview.
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY!, httpOptions: { apiVersion: 'v1alpha' } });
 
 
 function publishTranscriptMessage(interviewId: string, speaker: 'ai' | 'user', text: string): void {
@@ -128,14 +132,7 @@ export async function createSession(
   };
   store.set(interviewId, entry);
 
-  console.log(`[Gemini Debug] Initializing GoogleGenAI for ${interviewId}`);
-  console.log(`[Gemini Debug] API Version: v1alpha`);
-  console.log(`[Gemini Debug] Model: ${LIVE_MODEL}`);
-  
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY!, httpOptions: { apiVersion: 'v1alpha' } });
-
   try {
-    console.log(`[Gemini Debug] Calling ai.live.connect for ${interviewId}...`);
     const session = await Promise.race([
       ai.live.connect({
         model: LIVE_MODEL,
@@ -145,7 +142,6 @@ export async function createSession(
         },
         callbacks: {
         onopen: () => {
-          console.log(`[Gemini Debug] onopen fired for ${interviewId}`);
           console.log(`[Gemini] Session opened for interview ${interviewId}`);
           const e = store.get(interviewId);
           if (e) {
@@ -155,7 +151,6 @@ export async function createSession(
         },
 
         onmessage: (message: any) => {
-          console.log(`[Gemini Debug] onmessage fired for ${interviewId} (turnComplete: ${message.serverContent?.turnComplete})`);
           const e = store.get(interviewId);
           if (!e) return;
 
@@ -198,7 +193,6 @@ export async function createSession(
         },
 
         onerror: (error: any) => {
-          console.log(`[Gemini Debug] onerror fired for ${interviewId}:`, error);
           console.error(`[Gemini] Error for interview ${interviewId}:`, error);
           const e = store.get(interviewId);
           if (e) {
@@ -209,7 +203,6 @@ export async function createSession(
         },
 
         onclose: (event: any) => {
-          console.log(`[Gemini Debug] onclose fired for ${interviewId}. Reason:`, event?.reason);
           console.log(`[Gemini] Closed for interview ${interviewId}:`, event?.reason ?? '');
           const e = store.get(interviewId);
           if (e) {
@@ -294,7 +287,6 @@ export function closeSession(interviewId: string): void {
 
   publishEvent(interviewId, { type: 'close' });
   store.delete(interviewId);
-  console.log(`[Gemini Debug] Session cleaned up and removed for interview ${interviewId}`);
   console.log(`[Gemini] Session closed and removed for interview ${interviewId}`);
 }
 
