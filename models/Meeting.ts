@@ -36,6 +36,15 @@ const MeetingSettingsSchema = new Schema(
   { _id: false }
 );
 
+const BreakoutRoomSchema = new Schema(
+  {
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    participants: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+  },
+  { _id: false }
+);
+
 const MeetingSchema = new Schema<IMeeting>(
   {
     title: { type: String, required: true, trim: true },
@@ -58,6 +67,8 @@ const MeetingSchema = new Schema<IMeeting>(
     isInstant: { type: Boolean, default: false },
     isPrivate: { type: Boolean, default: false },
     settings: { type: MeetingSettingsSchema, default: () => ({}) },
+    breakoutRooms: { type: [BreakoutRoomSchema], default: [] },
+    breakoutRoomsActive: { type: Boolean, default: false },
     /** Persisted whiteboard: base-64 PNG data URL. Stored outside GridFS to keep it simple. */
     whiteboardData: { type: String, default: '' },
   },

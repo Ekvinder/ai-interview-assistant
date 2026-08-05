@@ -1,33 +1,50 @@
 "use client";
 
-import { useRef } from "react";
-import { Excalidraw } from "@excalidraw/excalidraw";
+/**
+ * Excalidraw accesses `window` at module evaluation time, so it cannot be
+ * imported statically in a Next.js app that runs SSR/SSG.  We load it with
+ * next/dynamic + ssr:false so the module is only evaluated in the browser.
+ */
+import dynamic from "next/dynamic";
 import "@excalidraw/excalidraw/index.css";
-
-import type { ExcalidrawImperativeAPI, WhiteboardCanvasProps, WhiteboardScene } from "@/types/whiteboard";
+import type { WhiteboardCanvasProps } from "@/types/whiteboard";
 import { useWhiteboardSync } from "@/hooks/useWhiteboardSync";
 
-export default function WhiteboardCanvas({ readOnly }: WhiteboardCanvasProps) {
-  const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
-  const { updateScene } = useWhiteboardSync();
+// Excalidraw is loaded client-side only — never executed on the server.
+const Excalidraw = dynamic(
+  () => import("@excalidraw/excalidraw").then((mod) => mod.Excalidraw),
+  { ssr: false }
+);
+
+export default function WhiteboardCanvas({
+  readOnly,
+  localIdentity,
+}: WhiteboardCanvasProps) {
+  const { handleLocalChange, isRemoteUpdateRef, excalidrawApiRef } =
+    useWhiteboardSync();
 
   return (
     <div className="h-full w-full">
       <Excalidraw
         excalidrawAPI={(instance) => {
-          apiRef.current = instance;
+          excalidrawApiRef.current = instance;
         }}
         viewModeEnabled={readOnly}
         theme="dark"
         onChange={(elements, appState, files) => {
-          // Guard: only propagate changes that originate from user interaction.
-          // Excalidraw fires onChange on every internal state update (including
-          // ones triggered by our own setScene calls), which causes an infinite
-          // loop. Checking collaborators/loading flags prevents self-triggered cycles.
+          // Do not publish while Excalidraw is loading its initial state.
           if (appState.isLoading) return;
 
-          const scene: WhiteboardScene = { elements, appState, files };
-          updateScene(scene);
+          // Do not publish when the change was caused by our own updateScene()
+          // call from an incoming remote message.  Clearing the guard happens
+          // in a microtask inside useWhiteboardSync after updateScene returns,
+          // so this check is always consistent.
+          if (isRemoteUpdateRef.current) return;
+
+          // Do not publish in read-only / view mode — the user cannot draw.
+          if (readOnly) return;
+
+          handleLocalChange({ elements, appState, files });
         }}
       />
     </div>

@@ -1,29 +1,76 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateLiveKitToken } from "@/services/livekit.service";
+import { generateLiveKitToken, getLiveKitRoomName } from "@/services/livekit.service";
 import { getCurrentUser } from '@/lib/auth';
 import { MeetingService } from '@/services/meeting.service';
 
 export async function POST(request: NextRequest) {
   try {
-    const { roomName, identity, name, metadata } = await request.json();
+    const { roomName, identity, name, metadata, meetingId, breakoutRoomId } = await request.json();
+    const actualMeetingId = meetingId || roomName;
+    
+    let targetRoomName = roomName; // default to passed roomName
+    let finalMetadata = metadata;
+    
     // This endpoint is also used by the separate interview feature. Apply the
-    // admission check only when roomName identifies a MeetSpace meeting.
+    // admission check only when actualMeetingId identifies a MeetSpace meeting.
     try {
-      const meeting = await MeetingService.getMeetingByMeetingId(roomName);
+      const meeting = await MeetingService.getMeetingByMeetingId(actualMeetingId);
       const user = await getCurrentUser();
       if (!user) return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
       if (identity !== user.userId) {
         return NextResponse.json({ success: false, message: 'Invalid room identity' }, { status: 403 });
       }
+      
+      const hostId = meeting.host._id?.toString() ?? meeting.host.toString();
+      const isHost = (hostId === user.userId);
+      
       // A JWT is the capability to enter a LiveKit room. Never mint one for a
       // pending or denied guest, even if they call this endpoint directly.
-      const hostId = meeting.host._id?.toString() ?? meeting.host.toString();
-      if (hostId !== user.userId) {
-        const { status } = await MeetingService.getJoinRequestStatus(user.userId, roomName);
+      if (!isHost) {
+        const { status } = await MeetingService.getJoinRequestStatus(user.userId, actualMeetingId);
         if (status !== 'approved') {
           return NextResponse.json({ success: false, message: 'Waiting for host approval' }, { status: 403 });
         }
       }
+      
+      // --- Breakout Rooms Validation ---
+      if (breakoutRoomId && breakoutRoomId !== 'main') {
+        if (!meeting.breakoutRoomsActive) {
+          return NextResponse.json({ success: false, message: 'Breakout rooms are not active' }, { status: 403 });
+        }
+        const breakoutRoom = meeting.breakoutRooms?.find((r: any) => r.id === breakoutRoomId);
+        if (!breakoutRoom) {
+          return NextResponse.json({ success: false, message: 'Breakout room not found' }, { status: 404 });
+        }
+        
+        const isParticipant = breakoutRoom.participants?.some(
+          (p: any) => p.toString() === user.userId,
+        );
+        if (!isHost && !isParticipant) {
+          return NextResponse.json({ success: false, message: 'Not assigned to this breakout room' }, { status: 403 });
+        }
+        
+        targetRoomName = getLiveKitRoomName(actualMeetingId, breakoutRoomId);
+      }
+      
+      // Inject Breakout Metadata
+      let parsedMetadata: any = {};
+      try {
+        if (metadata) parsedMetadata = JSON.parse(metadata);
+      } catch (e) {
+        // ignore parse errors if metadata isn't JSON
+      }
+      
+      parsedMetadata = {
+        ...parsedMetadata,
+        meetingId: actualMeetingId,
+        breakoutId: breakoutRoomId || 'main',
+        isHost,
+        participantRole: isHost ? 'host' : 'participant',
+      };
+      
+      finalMetadata = JSON.stringify(parsedMetadata);
+      
     } catch (error) {
       // A missing meeting means this is an interview room, whose existing token
       // semantics are intentionally unchanged. Re-throw operational failures.
@@ -32,10 +79,10 @@ export async function POST(request: NextRequest) {
     }
 
     const token = await generateLiveKitToken({
-      roomName,
+      roomName: targetRoomName,
       identity,
       name,
-      metadata,
+      metadata: finalMetadata,
     });
 
     return NextResponse.json({

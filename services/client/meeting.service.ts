@@ -1,5 +1,5 @@
 import { apiFetch } from '@/lib/api';
-import { IMeeting } from '@/types';
+import { IMeeting, IBreakoutRoom } from '@/types';
 
 export interface PaginatedMeetings {
   meetings: IMeeting[];
@@ -138,5 +138,33 @@ export const meetingClientService = {
   loadWhiteboard: async (meetingId: string): Promise<string> => {
     const result = await apiFetch<{ whiteboardData: string }>(`/api/meetings/${meetingId}/whiteboard`);
     return result.whiteboardData ?? '';
+  },
+
+  /**
+   * Breakout Rooms - Phase 1 Backend Preparation
+   */
+  getBreakoutRooms: async (meetingId: string): Promise<{ breakoutRooms: IBreakoutRoom[], breakoutRoomsActive: boolean }> => {
+    return apiFetch<{ breakoutRooms: IBreakoutRoom[], breakoutRoomsActive: boolean }>(`/api/meetings/${meetingId}/breakout`);
+  },
+
+  createBreakoutRooms: async (meetingId: string, rooms: { id: string, name: string }[]): Promise<IBreakoutRoom[]> => {
+    return apiFetch<IBreakoutRoom[]>(`/api/meetings/${meetingId}/breakout`, {
+      method: 'POST',
+      body: JSON.stringify({ rooms }),
+    });
+  },
+
+  updateBreakoutRoomsStatus: async (meetingId: string, isActive: boolean): Promise<{ active: boolean }> => {
+    return apiFetch<{ active: boolean }>(`/api/meetings/${meetingId}/breakout/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isActive }),
+    });
+  },
+
+  assignToBreakoutRoom: async (meetingId: string, breakoutRoomId: string, participantId: string): Promise<IBreakoutRoom[]> => {
+    return apiFetch<IBreakoutRoom[]>(`/api/meetings/${meetingId}/breakout/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ breakoutRoomId, participantId }),
+    });
   },
 };

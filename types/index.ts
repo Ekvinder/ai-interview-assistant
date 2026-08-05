@@ -95,6 +95,12 @@ export interface IJoinRequest {
   decidedAt?: Date;
 }
 
+export interface IBreakoutRoom {
+  id: string;
+  name: string;
+  participants: Types.ObjectId[];
+}
+
 export interface IMeetingSettings {
   allowChat: boolean;
   allowMic: boolean;
@@ -118,6 +124,8 @@ export interface IMeeting extends Document {
   isInstant: boolean;
   isPrivate: boolean;
   settings: IMeetingSettings;
+  breakoutRooms?: IBreakoutRoom[];
+  breakoutRoomsActive?: boolean;
   /** Base-64 PNG data URL of the persisted whiteboard. Empty string when never saved. */
   whiteboardData?: string;
   createdAt: Date;

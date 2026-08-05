@@ -1,5 +1,8 @@
 import { Types } from 'mongoose';
 import { Meeting } from '../models/Meeting';
+// User must be imported so Mongoose registers the schema before any query
+// that calls .populate(...) with ref: 'User' executes.
+import '../models/User';
 import { ApiError } from '../utils/apiError';
 import { HTTP_STATUS } from '../utils/constants';
 import { connectToDatabase } from '../lib/mongodb';
@@ -414,6 +417,96 @@ export class MeetingService {
     } catch (error: unknown) {
       const err = error as { message?: string };
       throw new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, err.message || 'Failed to fetch upcoming meetings');
+    }
+  }
+
+  // --- Breakout Room Methods ---
+  static async getBreakoutRooms(userId: string, meetingId: string) {
+    try {
+      await connectToDatabase();
+      const meeting = await Meeting.findOne({ meetingId });
+      if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+
+      // READ is allowed for the host and any approved participant.
+      // WRITE operations (create, assign, status) keep the host-only guard.
+      const isHost = meeting.host.toString() === userId;
+      const isParticipant = meeting.participants.some(
+        (p: { user: Types.ObjectId }) => p.user.toString() === userId
+      );
+      if (!isHost && !isParticipant) {
+        throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Not a member of this meeting');
+      }
+
+      return {
+        breakoutRooms: meeting.breakoutRooms || [],
+        breakoutRoomsActive: meeting.breakoutRoomsActive || false
+      };
+    } catch (error: unknown) {
+      if (error instanceof ApiError) throw error;
+      const err = error as { message?: string };
+      throw new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, err.message || 'Failed to get breakout rooms');
+    }
+  }
+
+  static async createBreakoutRooms(userId: string, meetingId: string, rooms: { id: string, name: string }[]) {
+    try {
+      await connectToDatabase();
+      const meeting = await Meeting.findOne({ meetingId });
+      if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+      if (meeting.host.toString() !== userId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only host can manage breakout rooms');
+
+      meeting.breakoutRooms = rooms.map(r => ({ id: r.id, name: r.name, participants: [] }));
+      meeting.breakoutRoomsActive = false;
+      await meeting.save();
+      return meeting.breakoutRooms;
+    } catch (error: unknown) {
+      if (error instanceof ApiError) throw error;
+      const err = error as { message?: string };
+      throw new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, err.message || 'Failed to create breakout rooms');
+    }
+  }
+
+  static async updateBreakoutRoomsStatus(userId: string, meetingId: string, isActive: boolean) {
+    try {
+      await connectToDatabase();
+      const meeting = await Meeting.findOne({ meetingId });
+      if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+      if (meeting.host.toString() !== userId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only host can manage breakout rooms');
+
+      meeting.breakoutRoomsActive = isActive;
+      await meeting.save();
+      return { active: meeting.breakoutRoomsActive };
+    } catch (error: unknown) {
+      if (error instanceof ApiError) throw error;
+      const err = error as { message?: string };
+      throw new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, err.message || 'Failed to update breakout rooms status');
+    }
+  }
+
+  static async assignParticipantToBreakoutRoom(userId: string, meetingId: string, breakoutRoomId: string, participantId: string) {
+    try {
+      await connectToDatabase();
+      const meeting = await Meeting.findOne({ meetingId });
+      if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
+      if (meeting.host.toString() !== userId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only host can manage breakout rooms');
+
+      // Remove from all existing breakout rooms first
+      meeting.breakoutRooms.forEach((room: any) => {
+        room.participants = room.participants.filter((p: Types.ObjectId) => p.toString() !== participantId);
+      });
+
+      if (breakoutRoomId && breakoutRoomId !== 'main') {
+        const room = meeting.breakoutRooms.find((r: any) => r.id === breakoutRoomId);
+        if (!room) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Breakout room not found');
+        room.participants.push(new Types.ObjectId(participantId));
+      }
+
+      await meeting.save();
+      return meeting.breakoutRooms;
+    } catch (error: unknown) {
+      if (error instanceof ApiError) throw error;
+      const err = error as { message?: string };
+      throw new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, err.message || 'Failed to assign participant to breakout room');
     }
   }
 }

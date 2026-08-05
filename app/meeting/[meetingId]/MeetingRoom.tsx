@@ -16,14 +16,16 @@ import {
   useParticipantInfo,
   useChat,
   useDataChannel,
+  useRoomContext,
 } from '@livekit/components-react';
 import type { TrackReferenceOrPlaceholder, ReceivedChatMessage } from '@livekit/components-react';
-import { ConnectionState, Track, Participant } from 'livekit-client';
+import { ConnectionState, Track, Participant , RoomEvent} from 'livekit-client';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { roomOptions } from '@/lib/livekit-client-options';
 import WhiteboardPanel from './components/WhiteboardPanel';
+import HostBreakoutPanel from './components/HostBreakoutPanel';
 import {
   Mic, MicOff,
   Video, VideoOff,
@@ -51,11 +53,13 @@ import {
   Trash2,
   Undo2,
   Redo2,
+  Layers,
 } from 'lucide-react';
 import { getLiveKitToken } from '@/lib/api';
 import { meetingClientService } from '@/services/client/meeting.service';
 import { toast } from 'sonner';
 import ScreenShareView from './components/ScreenShareView';
+import { useBreakoutTransition } from '@/hooks/useBreakoutTransition';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -126,6 +130,58 @@ function DurationClock({ running }: { running: boolean }) {
   const ss = String(seconds % 60).padStart(2, '0');
   return <span className="font-mono tabular-nums">{mm}:{ss}</span>;
 }
+
+// ─── Breakout Room Transition Helper ──────────────────────────────────────────
+//
+// Disconnects the current LiveKit room when a breakout switch is triggered, then
+// calls onDisconnectComplete so MeetingRoom can clear the token and fetch a new one.
+//
+// Guards:
+// - hasDisconnectedRef prevents a second disconnect if the parent re-renders
+//   while isSwitching is still true (which would re-run the effect because
+//   onDisconnectComplete is an inline arrow and always a new reference).
+// - The effect tracks the specific `isSwitching=true` epoch by resetting the
+//   guard when isSwitching flips back to false.
+
+function RoomTransitionHandler({
+  isSwitching,
+  onDisconnectComplete,
+}: {
+  isSwitching: boolean;
+  onDisconnectComplete: () => void;
+}) {
+  const room = useRoomContext();
+  // Stable ref to the latest callback — avoids the effect re-running when the
+  // inline arrow in MeetingRoom's JSX creates a new function reference.
+  const onDisconnectCompleteRef = useRef(onDisconnectComplete);
+  useEffect(() => { onDisconnectCompleteRef.current = onDisconnectComplete; });
+
+  // Guards against calling disconnect() more than once per switch epoch.
+  const hasDisconnectedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isSwitching) {
+      // Reset the guard when the switch completes so the next switch works.
+      hasDisconnectedRef.current = false;
+      return;
+    }
+    if (hasDisconnectedRef.current) return; // already handling this epoch
+    if (!room) return;
+
+    hasDisconnectedRef.current = true;
+    room.disconnect()
+      .then(() => onDisconnectCompleteRef.current())
+      .catch((err) => {
+        console.error('[RoomTransitionHandler] disconnect error:', err);
+        onDisconnectCompleteRef.current();
+      });
+  // onDisconnectComplete is intentionally excluded — we read it via ref.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSwitching, room]);
+
+  return null;
+}
+
 // ─── Root component ───────────────────────────────────────────────────────────
 
 interface MeetingRoomProps {
@@ -141,18 +197,36 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
   const [token, setToken]           = useState<string | null>(null);
   const [serverUrl, setServerUrl]   = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
-  const [joinStatus, setJoinStatus] = useState<'pending' | 'approved' | 'denied'>(userId === hostUserId ? 'approved' : 'pending');
-  const [loading, setLoading]       = useState(userId === hostUserId);
-  const leftRef = useRef(false);
+  const [joinStatus, setJoinStatus] = useState<'pending' | 'approved' | 'denied'>(
+    userId === hostUserId ? 'approved' : 'pending',
+  );
+  const [loading, setLoading] = useState(true);
+  const leftRef       = useRef(false);
+  const isSwitchingRef = useRef(false);
   const isHost = userId === hostUserId;
 
+  const {
+    targetBreakoutId,
+    setTargetBreakoutId,
+    isSwitchingRooms,
+    setIsSwitchingRooms,
+    readyForTokenSwitch,
+    setReadyForTokenSwitch,
+    initialCheckComplete,
+  } = useBreakoutTransition(meeting.meetingId, userId, joinStatus);
+
+  useEffect(() => { isSwitchingRef.current = isSwitchingRooms; }, [isSwitchingRooms]);
+
+  // ── Guest admission ────────────────────────────────────────────────────────
   useEffect(() => {
+    if (isHost) {
+      setLoading(false); // host skips admission — handled by token-fetch effect
+      return;
+    }
     let cancelled = false;
-    async function requestAdmission() {
-      if (isHost) return;
-      setLoading(true);
+    setLoading(true);
+    (async () => {
       try {
-        // A prior token must not let a guest bypass a new approval decision.
         sessionStorage.removeItem(MEETING_TOKEN_KEY);
         await meetingClientService.joinMeeting(meeting.meetingId);
         const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId);
@@ -162,64 +236,102 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }
-    requestAdmission();
+    })();
     return () => { cancelled = true; };
   }, [isHost, meeting.meetingId]);
 
+  // ── Guest approval polling ─────────────────────────────────────────────────
   useEffect(() => {
     if (isHost || joinStatus !== 'pending') return;
     let delay = 2000;
     let timerId: ReturnType<typeof setTimeout>;
     let active = true;
-
     const poll = async () => {
       try {
         const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId);
         if (!active) return;
         setJoinStatus(status);
-        // Stop polling once the host made a decision
         if (status !== 'pending') return;
-      } catch { /* transient — keep retrying */ }
-      // Exponential backoff: 2 s → 4 s → 8 s → cap at 10 s
+      } catch { /* transient */ }
       delay = Math.min(delay * 1.5, 10_000);
       timerId = setTimeout(poll, delay);
     };
-
     timerId = setTimeout(poll, delay);
     return () => { active = false; clearTimeout(timerId); };
   }, [isHost, joinStatus, meeting.meetingId]);
 
+  // ── Token fetch ────────────────────────────────────────────────────────────
+  // Runs when:
+  //   • joinStatus first becomes 'approved'
+  //   • initialCheckComplete flips to true (breakout pre-check done)
+  //   • A breakout room switch completes (readyForTokenSwitch becomes true)
+  // Does NOT run when:
+  //   • isSwitchingRooms is true but readyForTokenSwitch is false
+  //     (LiveKit is still disconnecting — wait for RoomTransitionHandler)
   useEffect(() => {
+    if (joinStatus !== 'approved') return;
+    if (!initialCheckComplete) return;
+    if (isSwitchingRooms && !readyForTokenSwitch) return;
+
     let cancelled = false;
-    async function getApprovedToken() {
-      if (joinStatus !== 'approved') return;
-      setLoading(true);
-      setTokenError(null);
+    setLoading(true);
+    setTokenError(null);
+
+    (async () => {
       try {
         const { token: t, url: u } = await getLiveKitToken(
           meeting.meetingId,
           userId,
-          { name: userName, metadata: JSON.stringify({ userId, email: userEmail, name: userName }) },
+          {
+            name: userName,
+            metadata: JSON.stringify({ userId, email: userEmail, name: userName }),
+            breakoutRoomId: targetBreakoutId || undefined,
+          },
         );
-        if (!cancelled) { setToken(t); setServerUrl(u); }
+        if (!cancelled) {
+          setToken(t);
+          setServerUrl(u);
+          setIsSwitchingRooms(false);
+          setReadyForTokenSwitch(false);
+        }
       } catch (err) {
-        const e = err as Error;
-        if (!cancelled) setTokenError(e.message || 'Failed to get meeting token');
+        if (!cancelled) {
+          if (targetBreakoutId) {
+            toast.error('Breakout room unavailable. Returning to main meeting.');
+            setTargetBreakoutId(null);
+            setIsSwitchingRooms(true);
+            setReadyForTokenSwitch(true);
+          } else {
+            setTokenError((err as Error).message || 'Failed to get meeting token');
+          }
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }
-    getApprovedToken();
-    return () => { cancelled = true; };
-  }, [joinStatus, meeting.meetingId, userId, userName, userEmail]);
+    })();
 
+    return () => { cancelled = true; };
+  // setTargetBreakoutId, setIsSwitchingRooms, setReadyForTokenSwitch are all
+  // stable (useCallback / useState setters) — safe to omit from deps.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    joinStatus,
+    initialCheckComplete,
+    // Re-fetch when the user is switched to/from a breakout room.
+    targetBreakoutId,
+    readyForTokenSwitch,
+    // Stable identity fields — only change if the meeting itself changes.
+    meeting.meetingId,
+    userId,
+    userName,
+    userEmail,
+  ]);
+
+  // ── Leave / cleanup ────────────────────────────────────────────────────────
   const handleLeave = useCallback(() => {
-    if (leftRef.current) return;
+    if (leftRef.current || isSwitchingRef.current) return;
     leftRef.current = true;
     sessionStorage.removeItem(MEETING_TOKEN_KEY);
-    // Do not make navigation depend on a network round trip. Unmounting the
-    // room disconnects LiveKit immediately; the API call only records it.
     void meetingClientService.leaveMeeting(meeting.meetingId).catch(() => undefined);
     router.replace('/dashboard');
   }, [meeting.meetingId, router]);
@@ -229,11 +341,15 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       sessionStorage.removeItem(MEETING_TOKEN_KEY);
       navigator.sendBeacon(`/api/meetings/${meeting.meetingId}/leave`);
     };
-    window.addEventListener('beforeunload', h);
-    return () => window.removeEventListener('beforeunload', h);
+    window.addEventListener('pagehide', h);
+    return () => window.removeEventListener('pagehide', h);
   }, [meeting.meetingId]);
 
-  if (loading) {
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  // Show spinner while we are: loading the token OR waiting for breakout init.
+  // Do not show it when isSwitchingRooms is true — that has its own overlay.
+  if ((loading || !initialCheckComplete) && !isSwitchingRooms) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-4 text-muted-foreground">
         <Loader2 className="w-8 h-8 animate-spin" />
@@ -247,7 +363,9 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
         <Clock className="w-10 h-10 text-muted-foreground opacity-60" />
         <h2 className="font-semibold text-lg">Waiting for the host</h2>
-        <p className="text-sm text-muted-foreground max-w-sm">Your join request was sent. Your camera and microphone will not connect until the host allows you in.</p>
+        <p className="text-sm text-muted-foreground max-w-sm">
+          Your join request was sent. Your camera and microphone will not connect until the host allows you in.
+        </p>
         <Button variant="outline" onClick={handleLeave}>Leave waiting room</Button>
       </div>
     );
@@ -258,23 +376,23 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
         <XCircle className="w-10 h-10 text-destructive opacity-70" />
         <h2 className="font-semibold text-lg">Join request denied</h2>
-        <p className="text-sm text-muted-foreground max-w-sm">The host did not allow you to join this meeting.</p>
+        <p className="text-sm text-muted-foreground max-w-sm">
+          The host did not allow you to join this meeting.
+        </p>
         <Button variant="outline" onClick={handleLeave}>Back to Dashboard</Button>
       </div>
     );
   }
 
-  if (tokenError || !token || !serverUrl) {
+  if (tokenError) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
         <WifiOff className="w-10 h-10 text-destructive opacity-60" />
         <h2 className="font-semibold text-lg">Unable to join</h2>
-        <p className="text-sm text-muted-foreground max-w-sm">
-          {tokenError || 'Could not connect to the meeting room.'}
-        </p>
+        <p className="text-sm text-muted-foreground max-w-sm">{tokenError}</p>
         <div className="flex gap-3">
           <Button variant="outline" onClick={() => router.push('/dashboard')}>Back to Dashboard</Button>
-          <Button onClick={() => { leftRef.current = false; setLoading(true); }}>
+          <Button onClick={() => { leftRef.current = false; setTokenError(null); setLoading(true); }}>
             <RefreshCw className="w-4 h-4 mr-2" />Retry
           </Button>
         </div>
@@ -282,29 +400,69 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     );
   }
 
+  // While a breakout room switch is in progress we keep the LiveKitRoom mounted
+  // (so RoomTransitionHandler can call room.disconnect()) but show a full-screen
+  // overlay. We only hide the LiveKitRoom after the token is cleared.
+  if (!token || !serverUrl) {
+    // This state is transient — the token-fetch effect will run momentarily.
+    // Show the switching overlay if that is the reason, otherwise the spinner.
+    return isSwitchingRooms ? (
+      <div className="relative flex flex-col flex-1">
+        <div className="absolute inset-0 z-[9999] flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm">
+          <Loader2 className="w-8 h-8 animate-spin text-primary mb-4" />
+          <p className="text-sm font-medium">
+            {targetBreakoutId ? 'Joining Breakout Room…' : 'Returning to Main Room…'}
+          </p>
+        </div>
+      </div>
+    ) : (
+      <div className="flex flex-col items-center justify-center flex-1 gap-4 text-muted-foreground">
+        <Loader2 className="w-8 h-8 animate-spin" />
+        <p className="text-sm">Connecting to meeting…</p>
+      </div>
+    );
+  }
+
   return (
-    <LiveKitRoom
-      options={roomOptions}
-      token={token}
-      serverUrl={serverUrl}
-      connect
-      audio={false}
-      video={false}
-      onDisconnected={handleLeave}
-      onError={(err) => {
-        // NotAllowedError = user denied mic/camera permission — not a fatal meeting error
-        if (err.name === 'NotAllowedError' || err.message?.toLowerCase().includes('permission')) {
-          console.warn('[LiveKit] Device permission denied:', err.message);
-          return;
-        }
-        console.error('[LiveKit Meeting]', err);
-        toast.error('Connection error: ' + err.message);
-      }}
-      style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}
-    >
-      <RoomAudioRenderer />
-      <RoomContent meeting={meeting} onLeave={handleLeave} hostUserId={hostUserId} userId={userId} />
-    </LiveKitRoom>
+    <div className="relative flex flex-col flex-1 overflow-hidden">
+      {isSwitchingRooms && (
+        <div className="absolute inset-0 z-[9999] flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm">
+          <Loader2 className="w-8 h-8 animate-spin text-primary mb-4" />
+          <p className="text-sm font-medium">
+            {targetBreakoutId ? 'Joining Breakout Room…' : 'Returning to Main Room…'}
+          </p>
+        </div>
+      )}
+      <LiveKitRoom
+        options={roomOptions}
+        token={token}
+        serverUrl={serverUrl}
+        connect
+        audio={false}
+        video={false}
+        onDisconnected={handleLeave}
+        onError={(err) => {
+          if (err.name === 'NotAllowedError' || err.message?.toLowerCase().includes('permission')) {
+            console.warn('[LiveKit] Device permission denied:', err.message);
+            return;
+          }
+          console.error('[LiveKit Meeting]', err);
+          toast.error('Connection error: ' + err.message);
+        }}
+        style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}
+      >
+        <RoomTransitionHandler
+          isSwitching={isSwitchingRooms}
+          onDisconnectComplete={() => {
+            setReadyForTokenSwitch(true);
+            setToken(null);     // clears token so LiveKitRoom unmounts cleanly
+            setServerUrl(null); // prevents stale URL from being reused
+          }}
+        />
+        <RoomAudioRenderer />
+        <RoomContent meeting={meeting} onLeave={handleLeave} hostUserId={hostUserId} userId={userId} />
+      </LiveKitRoom>
+    </div>
   );
 }
 
@@ -323,13 +481,13 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   // re-register even after LiveKit connected.
   const isHost = !!(hostUserId && userId === hostUserId);
 
-  // Panel state: 'participants' | 'chat' | 'host' | 'whiteboard' | null
-  const [showPanel, setShowPanel] = useState<'participants' | 'chat' | 'host' | 'whiteboard' | null>(null);
+  // Panel state: 'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | null
+  const [showPanel, setShowPanel] = useState<'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   // Ref mirrors showPanel so the unread effect always reads the current value
-  const showPanelRef = useRef<'participants' | 'chat' | 'host' | 'whiteboard' | null>(null);
+  const showPanelRef = useRef<'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | null>(null);
 
-  const togglePanel = useCallback((panel: 'participants' | 'chat' | 'host' | 'whiteboard') => {
+  const togglePanel = useCallback((panel: 'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout') => {
     setShowPanel((p) => {
       const next = p === panel ? null : panel;
       showPanelRef.current = next;
@@ -358,6 +516,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
       Notification.requestPermission().catch(() => {/* ignore */});
     }
   }, []);
+ 
 
   // Play a short beep via Web Audio API — no external file required
   const playNotificationSound = useCallback(() => {
@@ -650,6 +809,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
       <div className="flex flex-1 overflow-hidden min-h-0">
 
         {/* Main stage */}
+        {/*div contain classname flex flex-*/}
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           {screenShareActive && activeScreenShare ? (
             <div className="flex flex-col md:flex-row flex-1 overflow-hidden bg-black">
@@ -684,7 +844,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
               </div>
             </div>
           ) : (
-            <div className="flex-1 overflow-auto p-3 sm:p-4 bg-background/50">
+            <div className="flex-1 overflow-hidden p-2 sm:p-3 bg-background/50">
               <VideoGrid
                 participants={participants}
                 localParticipant={localParticipant ?? undefined}
@@ -720,18 +880,22 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
           />
         )}
 
+       
+
         {/* Whiteboard panel */}
         {showPanel === 'whiteboard' && (
           <WhiteboardPanel
             meetingId={meeting.meetingId}
-            onClose={() => setShowPanel(null)}
             isHost={isHost}
             whiteboardLocked={whiteboardLocked}
+            localIdentity={localParticipant?.identity ?? ''}
             onToggleLock={toggleWhiteboardLock}
+            onClose={() => setShowPanel(null)}
           />
         )}
 
         {/* Host controls panel — host only */}
+        {/* */}
         {showPanel === 'host' && isHost && (
           <HostControlsPanel
             participants={participants}
@@ -742,6 +906,15 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             onEndMeeting={handleEndMeeting}
             onRemoveParticipant={handleRemoveParticipant}
             onLockMeeting={handleLockMeeting}
+            onClose={() => setShowPanel(null)}
+          />
+        )}
+
+        {/* Breakout Rooms panel — host only */}
+        {showPanel === 'breakout' && isHost && (
+          <HostBreakoutPanel
+            meetingId={meeting.meetingId}
+            participants={participants}
             onClose={() => setShowPanel(null)}
           />
         )}
@@ -777,6 +950,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             activeLabel="Stop share" inactiveLabel="Share screen"
             onToggle={handleScreenShare} disabled={screenPending} />
         )}
+        
         <ControlButton active={showPanel === 'whiteboard'}
           activeIcon={<PenTool className="w-5 h-5" />}
           inactiveIcon={<PenTool className="w-5 h-5" />}
@@ -821,20 +995,36 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
         {/* Host controls button — host only */}
         {isHost && (
-          <div className="flex flex-col items-center gap-1">
-            <Button
-              variant={showPanel === 'host' ? 'default' : 'outline'}
-              className={`w-12 h-12 rounded-full p-0 flex items-center justify-center transition-colors
-                ${showPanel === 'host' ? 'bg-rose-600 hover:bg-rose-700 text-white border-0' : ''}`}
-              onClick={() => togglePanel('host')}
-              title="Host controls"
-              aria-label="Host controls"
-              aria-pressed={showPanel === 'host'}
-            >
-              <ShieldAlert className="w-5 h-5" />
-            </Button>
-            <span className="text-[10px] text-muted-foreground hidden sm:block">Controls</span>
-          </div>
+          <>
+            <div className="flex flex-col items-center gap-1">
+              <Button
+                variant={showPanel === 'breakout' ? 'default' : 'outline'}
+                className={`w-12 h-12 rounded-full p-0 flex items-center justify-center transition-colors
+                  ${showPanel === 'breakout' ? 'bg-indigo-600 hover:bg-indigo-700 text-white border-0' : ''}`}
+                onClick={() => togglePanel('breakout')}
+                title="Breakout Rooms"
+                aria-label="Breakout Rooms"
+                aria-pressed={showPanel === 'breakout'}
+              >
+                <Layers className="w-5 h-5" />
+              </Button>
+              <span className="text-[10px] text-muted-foreground hidden sm:block">Breakout</span>
+            </div>
+            <div className="flex flex-col items-center gap-1">
+              <Button
+                variant={showPanel === 'host' ? 'default' : 'outline'}
+                className={`w-12 h-12 rounded-full p-0 flex items-center justify-center transition-colors
+                  ${showPanel === 'host' ? 'bg-rose-600 hover:bg-rose-700 text-white border-0' : ''}`}
+                onClick={() => togglePanel('host')}
+                title="Host controls"
+                aria-label="Host controls"
+                aria-pressed={showPanel === 'host'}
+              >
+                <ShieldAlert className="w-5 h-5" />
+              </Button>
+              <span className="text-[10px] text-muted-foreground hidden sm:block">Controls</span>
+            </div>
+          </>
         )}
         <Button variant="destructive" className="w-12 h-12 rounded-full p-0 flex items-center justify-center"
           onClick={onLeave} title="Leave meeting" aria-label="Leave meeting">
@@ -862,7 +1052,7 @@ function ThumbnailTile({ participant, cameraRef, micRef, isLocal, localCameraEna
   const abbr               = makeInitials(label);
 
   return (
-    <div className={`relative bg-zinc-800 rounded-lg overflow-hidden flex items-center justify-center shrink-0 aspect-video h-full ring-2 transition-all duration-150 ${isSpeaking ? 'ring-emerald-400' : 'ring-transparent'}`}>
+    <div className={`relative bg-zinc-800 rounded-lg overflow-hidden flex items-center justify-center shrink-0 w-full h-full md:h-auto aspect-video ring-2 transition-all duration-150 ${isSpeaking ? 'ring-emerald-400' : 'ring-transparent'}`}>
       {showCamera && cameraRef && 'publication' in cameraRef && cameraRef.publication ? (
         <VideoTrack trackRef={cameraRef} className="absolute inset-0 w-full h-full object-cover" style={{ objectFit: 'cover' }} />
       ) : (
@@ -890,14 +1080,42 @@ function VideoGrid({ participants, localParticipant, cameraByIdentity, micByIden
   localCameraEnabled: boolean;
 }) {
   const count = participants.length;
-  const gridClass = count <= 1 ? 'grid-cols-1' : count === 2 ? 'grid-cols-1 sm:grid-cols-2' : count <= 4 ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-3';
+  
+  let cols = 1;
+  let rows = 1;
+
+  if (count === 1) {
+    cols = 1; rows = 1;
+  } else if (count === 2) {
+    cols = 2; rows = 1;
+  } else if (count <= 4) {
+    cols = 2; rows = 2;
+  } else if (count <= 6) {
+    cols = 3; rows = 2;
+  } else if (count <= 9) {
+    cols = 3; rows = 3;
+  } else if (count <= 12) {
+    cols = 4; rows = 3;
+  } else {
+    cols = 4;
+    rows = Math.ceil(count / 4);
+  }
 
   if (count === 0) {
     return <div className="flex items-center justify-center h-full text-muted-foreground text-sm">Waiting for participants…</div>;
   }
 
+  const gridStyle: React.CSSProperties = {
+    display: 'grid',
+    gap: '8px',
+    height: '100%',
+    width: '100%',
+    gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+    gridTemplateRows: count > 12 ? 'repeat(auto-fill, minmax(180px, 1fr))' : `repeat(${rows}, minmax(0, 1fr))`,
+  };
+
   return (
-    <div className={`grid ${gridClass} gap-3 h-full auto-rows-fr`}>
+    <div style={gridStyle} className={count > 12 ? 'overflow-y-auto content-start p-1' : 'place-items-center p-1'}>
       {participants.map((participant) => {
         const isLocal = participant.identity === localParticipant?.identity;
         return (
@@ -931,25 +1149,27 @@ function ParticipantTile({ participant, cameraRef, micRef, isLocal, localCameraE
   const abbr               = makeInitials(label);
 
   return (
-    <div className={`relative bg-zinc-900 rounded-xl overflow-hidden flex items-center justify-center aspect-video ring-2 transition-all duration-200 ${isSpeaking ? 'ring-emerald-400' : 'ring-transparent'}`}>
-      {showCamera && cameraRef && 'publication' in cameraRef && cameraRef.publication ? (
-        <VideoTrack trackRef={cameraRef} className="absolute inset-0 w-full h-full object-cover" style={{ objectFit: 'cover' }} />
-      ) : (
-        <div className="flex flex-col items-center gap-3">
-          <Avatar className="w-20 h-20 border-2 border-white/10">
-            <AvatarFallback className="bg-zinc-700 text-white text-xl font-semibold">
-              {abbr || <VideoOff className="w-8 h-8 opacity-40" />}
-            </AvatarFallback>
-          </Avatar>
-          <span className="text-white/60 text-xs flex items-center gap-1.5"><VideoOff className="w-3 h-3" />Camera off</span>
+    <div className="w-full h-full min-h-0 min-w-0 flex items-center justify-center p-0.5 sm:p-1">
+      <div className={`relative bg-zinc-900 rounded-xl overflow-hidden flex items-center justify-center ring-2 transition-all duration-300 w-full h-full ${isSpeaking ? 'ring-emerald-400' : 'ring-transparent'}`}>
+        {showCamera && cameraRef && 'publication' in cameraRef && cameraRef.publication ? (
+          <VideoTrack trackRef={cameraRef} className="absolute inset-0 w-full h-full object-cover" style={{ objectFit: 'cover' }} />
+        ) : (
+          <div className="flex flex-col items-center gap-3">
+            <Avatar className="w-20 h-20 border-2 border-white/10">
+              <AvatarFallback className="bg-zinc-700 text-white text-xl font-semibold">
+                {abbr || <VideoOff className="w-8 h-8 opacity-40" />}
+              </AvatarFallback>
+            </Avatar>
+            <span className="text-white/60 text-xs flex items-center gap-1.5"><VideoOff className="w-3 h-3" />Camera off</span>
+          </div>
+        )}
+        {isSpeaking && <div className="absolute inset-0 rounded-xl ring-2 ring-emerald-400 pointer-events-none" />}
+        <div className="absolute bottom-0 left-0 right-0 px-3 py-2 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent">
+          <span className="text-white text-xs font-medium truncate max-w-[75%]">{isLocal ? `${label} (You)` : label}</span>
+          <span className={`flex items-center justify-center w-6 h-6 rounded-full ${micMuted ? 'bg-red-500/80' : 'bg-white/10'}`} title={micMuted ? 'Muted' : 'Mic on'}>
+            {micMuted ? <MicOff className="w-3 h-3 text-white" /> : <Mic className="w-3 h-3 text-white/70" />}
+          </span>
         </div>
-      )}
-      {isSpeaking && <div className="absolute inset-0 rounded-xl ring-2 ring-emerald-400 pointer-events-none" />}
-      <div className="absolute bottom-0 left-0 right-0 px-3 py-2 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent">
-        <span className="text-white text-xs font-medium truncate max-w-[75%]">{isLocal ? `${label} (You)` : label}</span>
-        <span className={`flex items-center justify-center w-6 h-6 rounded-full ${micMuted ? 'bg-red-500/80' : 'bg-white/10'}`} title={micMuted ? 'Muted' : 'Mic on'}>
-          {micMuted ? <MicOff className="w-3 h-3 text-white" /> : <Mic className="w-3 h-3 text-white/70" />}
-        </span>
       </div>
     </div>
   );

@@ -9,6 +9,18 @@ interface GenerateTokenParams {
   metadata?: string;
 }
 
+/**
+ * Generates a consistent LiveKit room name.
+ * If breakoutId is omitted or 'main', returns the meetingId.
+ * Otherwise returns a deterministic breakout room name.
+ */
+export function getLiveKitRoomName(meetingId: string, breakoutId?: string): string {
+  if (!breakoutId || breakoutId === 'main') {
+    return meetingId;
+  }
+  return `${meetingId}_breakout_${breakoutId}`;
+}
+
 export async function generateLiveKitToken({
   roomName,
   identity,

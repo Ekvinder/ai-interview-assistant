@@ -103,6 +103,8 @@ export interface LiveKitTokenOptions {
   name?: string;
   /** JSON string stored as participant.metadata in LiveKit */
   metadata?: string;
+  /** Optional ID of the breakout room to join */
+  breakoutRoomId?: string;
 }
 
 /**
