@@ -3,45 +3,54 @@
 /**
  * useWhiteboardSync
  *
- * Manages real-time Excalidraw collaboration over a LiveKit DataChannel.
+ * Manages real-time Excalidraw collaboration over a LiveKit DataChannel and
+ * implements the host-controlled whiteboard permission system.
  *
- * ── Why the first-stroke bug happened ─────────────────────────────────────────
+ * ── Architecture ───────────────────────────────────────────────────────────────
  *
- * The original implementation sent the full appState (scrollX, scrollY, zoom,
- * tool state, …) in every "scene-update" message and applied it via
- * updateScene({ appState }).  Excalidraw treats an appState update as "replace
- * current UI state".  When it arrived mid-draw it:
- *   1. Reset cursorButton, newElement, and activeTool, cancelling the in-progress
- *      stroke.  The next pointer-down was the first stroke that actually committed
- *      — users perceived this as "first stroke is ignored".
- *   2. Reset scrollX/scrollY/zoom, causing a jarring viewport jump that itself
- *      triggered another onChange → spurious publish loop.
+ * ONE instance of this hook lives in RoomContent for the lifetime of the room.
+ * excalidrawApiRef, isRemoteUpdateRef, and handleLocalChange are passed as props
+ * down to WhiteboardCanvas so there is never a second DataChannel subscription.
  *
- * The guard flag (isRemoteUpdateRef) was also cleared in a microtask
- * (Promise.resolve().then), but React 18's concurrent renderer can fire the
- * onChange triggered by updateScene as a macrotask — after the microtask queue
- * drains — leaving the guard already cleared and allowing the remote-induced
- * onChange to publish, creating an echo loop.
+ * ── Synchronization model ─────────────────────────────────────────────────────
  *
- * ── Fixes applied ─────────────────────────────────────────────────────────────
+ * The system is PULL-BASED for initial state:
  *
- * 1. "scene-update" messages carry only elements + files.  appState is NEVER
- *    applied for incremental updates.  Viewport and tool state belong to each
- *    participant individually.
+ *   1. On hook mount: broadcast `request-sync` so the host delivers the current
+ *      scene + visibility + controllers in a single `full-sync` response.
  *
- * 2. "full-sync" messages (delivered once when a participant joins) DO carry
- *    appState so the newcomer starts with the correct initial style state.
+ *   2. When the participant's whiteboard panel opens (triggered by host broadcast
+ *      or manual button): re-send `request-sync` targeted at the host so the
+ *      fresh scene is applied immediately to the newly-mounted Excalidraw instance.
  *
- * 3. updateScene() is called with captureUpdate: "NEVER" on all remote updates.
- *    This tells Excalidraw the update is remote, preventing undo-stack pollution
- *    and suppressing internal state resets that cancel in-progress gestures.
+ *   3. Host push: the host broadcasts `whiteboard-visibility` and
+ *      `whiteboard-permissions` whenever they change.  Participants react to
+ *      these in real time.
  *
- * 4. The guard flag is cleared with setTimeout(0) — a macrotask — guaranteeing
- *    it outlives any synchronous or microtask-scheduled onChange Excalidraw fires
- *    in response to updateScene.
+ * This pull-based approach eliminates the race where a participant's DataChannel
+ * subscription is not yet active when the host first pushes visibility state.
+ *
+ * ── Security ──────────────────────────────────────────────────────────────────
+ *
+ * - `whiteboard-visibility` and `whiteboard-permissions` are only accepted from
+ *   the designated host identity.  Participants cannot spoof these messages.
+ * - `scene-update` is only applied if the sender is the host or in the
+ *   current controllers set.
+ *
+ * ── First-stroke bug fix ───────────────────────────────────────────────────────
+ *
+ * `scene-update` carries only elements + files, never appState.  Applying remote
+ * appState mid-draw resets cursorButton / activeTool / viewport, causing the
+ * first stroke to be cancelled.  `full-sync` carries a serializable appState
+ * subset ONLY for the initial scene load of a newly-joined participant.
+ * All remote updateScene() calls use captureUpdate: "NEVER" to suppress undo
+ * stack pollution and internal state resets.  The isRemoteUpdateRef guard is
+ * cleared with setTimeout(0) — a macrotask — to outlive React 18's concurrent
+ * renderer scheduling.
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type React from "react";
 import { useDataChannel, useLocalParticipant } from "@livekit/components-react";
 import type { ReceivedDataMessage } from "@livekit/components-core";
 import type { DataPublishOptions } from "livekit-client";
@@ -59,208 +68,236 @@ import {
   deserializeMessage,
 } from "@/lib/whiteboard/serializer";
 
-/** Topic used for all whiteboard DataChannel traffic. */
 const WHITEBOARD_TOPIC = "whiteboard" as const;
-
-/** Debounce interval for outbound scene-update messages (ms). */
 const DEBOUNCE_MS = 250;
-
-/**
- * Maximum random jitter (ms) added before responding to a request-sync.
- * Prevents all existing participants from sending full-sync simultaneously.
- */
 const SYNC_RESPONSE_JITTER_MS = 300;
 
+// ── Empty scene constant — used when the host hasn't drawn anything yet ────────
+const EMPTY_SCENE: WhiteboardSceneData = {
+  elements: [],
+  appState: {
+    viewBackgroundColor: "#ffffff",
+    currentItemStrokeColor: "#000000",
+    currentItemBackgroundColor: "transparent",
+    currentItemFillStyle: "hachure",
+    currentItemStrokeWidth: 1,
+    currentItemStrokeStyle: "solid",
+    currentItemRoughness: 1,
+    currentItemOpacity: 100,
+    currentItemFontFamily: 1,
+    currentItemFontSize: 20,
+    currentItemTextAlign: "left",
+    currentItemStartArrowhead: null,
+    currentItemEndArrowhead: "arrow",
+    zoom: { value: 1 },
+    scrollX: 0,
+    scrollY: 0,
+    theme: "dark",
+  },
+  files: {},
+};
+
 export interface UseWhiteboardSyncReturn {
-  /**
-   * Call this from Excalidraw's onChange.  It will debounce and publish a
-   * scene-update over the DataChannel unless the update was triggered by an
-   * incoming remote message.
-   */
   handleLocalChange: (scene: WhiteboardScene) => void;
-
-  /**
-   * Boolean ref that WhiteboardCanvas reads in onChange to detect whether the
-   * current change was caused by a remote updateScene() call.  When true the
-   * canvas MUST NOT call handleLocalChange.
-   */
   isRemoteUpdateRef: React.RefObject<boolean>;
+  excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
+
+  // ── Participant-side reactive state ───────────────────────────────────────
+  /** Whether the whiteboard is open (driven by host broadcasts + full-sync). */
+  whiteboardOpen: boolean;
+  /** Identities with explicit drawing permission (host excluded). */
+  controllers: ReadonlySet<string>;
+
+  // ── Host-side actions ─────────────────────────────────────────────────────
+  broadcastVisibility: (open: boolean) => void;
+  broadcastPermissions: (controllers: string[]) => void;
+  /** Sync the internal controllers ref without broadcasting (for request-sync responses). */
+  syncControllersRef: (controllers: string[]) => void;
 
   /**
-   * Ref that WhiteboardCanvas must assign the ExcalidrawImperativeAPI instance
-   * to so that this hook can call updateScene() on incoming messages.
+   * Re-request the current scene from the host.
+   * Called by RoomContent when the whiteboard panel is newly opened for a
+   * participant so the freshly-mounted Excalidraw gets the latest scene even if
+   * the initial mount-time request-sync was sent long before the panel opened.
    */
-  excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
+  requestResync: () => void;
 }
 
-export function useWhiteboardSync(): UseWhiteboardSyncReturn {
+export function useWhiteboardSync(
+  hostIdentity: string | undefined,
+  isHost: boolean,
+  hostWhiteboardOpenRef?: React.RefObject<boolean>
+): UseWhiteboardSyncReturn {
   const { localParticipant } = useLocalParticipant();
 
   // ── Refs ───────────────────────────────────────────────────────────────────
 
-  /** The Excalidraw imperative API instance — set by WhiteboardCanvas. */
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPI | null>(null);
-
-  /**
-   * Guard flag: true while a remote updateScene() is being processed.
-   * Checked inside WhiteboardCanvas.onChange to prevent the remote-induced
-   * onChange from publishing back to the network (echo loop).
-   *
-   * Cleared with setTimeout(0) — a macrotask — so it outlives any synchronous
-   * or microtask-scheduled onChange that Excalidraw fires in response to
-   * updateScene, regardless of React's rendering mode.
-   */
   const isRemoteUpdateRef = useRef(false);
-
-  /**
-   * Timer ID for the guard-clear macrotask.
-   * We cancel the previous timer each time a new remote update arrives so that
-   * rapid back-to-back remote updates don't accidentally clear the flag too early.
-   */
-  const guardClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  /**
-   * The most recently committed local scene, used for:
-   * - responding to request-sync from new participants (full-sync)
-   * - caching the last good state for reconnect
-   */
   const lastLocalSceneRef = useRef<{
     full: WhiteboardSceneData;
     update: WhiteboardElementsUpdate;
   } | null>(null);
-
-  /** Debounce timer for outbound scene-update messages. */
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  /**
-   * Guards request-sync responses: once we have responded to a given identity,
-   * we do not respond again to prevent duplicate full-sync floods.
-   */
   const respondedToRef = useRef(new Set<string>());
-
-  /**
-   * Stable ref to the DataChannel send function.
-   * Storing it in a ref avoids the circular initializer that arises if the
-   * useDataChannel callback and the destructured `send` reference each other.
-   */
   const sendRef = useRef<
     ((payload: Uint8Array, options: DataPublishOptions) => Promise<void>) | null
   >(null);
 
-  /** Stable ref for localParticipant.identity — avoids stale closures. */
-  const localIdentityRef = useRef<string | undefined>(
-    localParticipant?.identity
-  );
+  /**
+   * Queue for incoming scene-updates that arrive before the Excalidraw instance
+   * is ready (excalidrawApiRef.current is null).  Flushed as soon as the API
+   * becomes available via the polled effect below.
+   */
+  const pendingUpdatesRef = useRef<WhiteboardElementsUpdate[]>([]);
+  const pendingFullSyncRef = useRef<WhiteboardSceneData | null>(null);
+
+  const localIdentityRef = useRef<string | undefined>(localParticipant?.identity);
   useEffect(() => {
     localIdentityRef.current = localParticipant?.identity;
   }, [localParticipant?.identity]);
 
-  // ── Apply a remote elements-only update ───────────────────────────────────
+  // Initialise synchronously from the prop so the ref is populated before the
+  // first DataChannel message could ever arrive.
+  const hostIdentityRef = useRef<string | undefined>(hostIdentity);
+  useEffect(() => {
+    hostIdentityRef.current = hostIdentity;
+  }, [hostIdentity]);
+
+  const isHostRef = useRef(isHost);
+  useEffect(() => {
+    isHostRef.current = isHost;
+  }, [isHost]);
+
+  // ── Host-controlled reactive state ────────────────────────────────────────
+
+  const [whiteboardOpen, setWhiteboardOpen] = useState(false);
+  const [controllers, setControllers] = useState<ReadonlySet<string>>(new Set());
+
+  // Ref mirror so message handler always reads latest without stale closures.
+  const controllersRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    controllersRef.current = controllers;
+  }, [controllers]);
+
+  // ── Apply helpers ─────────────────────────────────────────────────────────
 
   /**
-   * Apply an incremental update (elements + files, no appState).
+   * Apply the guard-and-clear pattern used by both applyRemoteUpdate and applyFullSync.
+   * We cancel any pending clear-timer and start a fresh macrotask to clear the flag.
+   * This ensures isRemoteUpdateRef stays true for the entire synchronous update
+   * but gets cleared promptly afterwards — even if multiple updates arrive in rapid
+   * succession.
    *
-   * We deliberately do NOT touch appState here.  Doing so would:
-   *  - Reset the receiving user's viewport (scrollX/scrollY/zoom)
-   *  - Cancel their in-progress stroke (cursorButton, newElement, activeTool)
-   *  - Cause the "first stroke is ignored" bug
-   *
-   * captureUpdate: "NEVER" tells Excalidraw this is a remote update — it
-   * suppresses undo-stack recording and avoids internal state resets that
-   * would interfere with pointer events in flight.
+   * IMPORTANT: we do NOT cancel a previous clear-timer here anymore. Cancelling
+   * the timer would leave isRemoteUpdateRef permanently true (the host's own
+   * onChange would never fire handleLocalChange again). Instead we let each
+   * macrotask clear the flag independently — the last one wins, which is correct
+   * because the flag is boolean (idempotent to set false).
    */
-  const applyRemoteUpdate = useCallback(
-    (update: WhiteboardElementsUpdate) => {
-      const api = excalidrawApiRef.current;
-      if (!api) return;
-
-      // Cancel any pending guard-clear from a previous remote update.
-      if (guardClearTimerRef.current !== null) {
-        clearTimeout(guardClearTimerRef.current);
-      }
-
-      // Set the guard BEFORE updateScene so onChange knows to skip publishing.
-      isRemoteUpdateRef.current = true;
-
-      api.updateScene({
-        elements: update.elements,
-        // captureUpdate: "NEVER" = remote update, no undo stack, no state reset
-        captureUpdate: "NEVER",
-      });
-
-      // Add embedded files (images, etc.) separately — updateScene does not
-      // accept a files key.
-      if (update.files) {
-        const fileValues = Object.values(update.files);
-        if (fileValues.length > 0) {
-          try {
-            api.addFiles(fileValues as Parameters<typeof api.addFiles>[0]);
-          } catch {
-            // Gracefully ignore invalid file data.
-          }
-        }
-      }
-
-      // Clear the guard with a macrotask (setTimeout 0).
-      // This guarantees the flag is still true during any synchronous or
-      // microtask-scheduled onChange that Excalidraw fires as a result of
-      // updateScene, regardless of React's rendering strategy.
-      guardClearTimerRef.current = setTimeout(() => {
-        guardClearTimerRef.current = null;
-        isRemoteUpdateRef.current = false;
-      }, 0);
-    },
-    []
-  );
-
-  // ── Apply a full-sync scene (new participant joining) ─────────────────────
-
-  /**
-   * Apply a full scene including appState.
-   * Only used once per participant session — when they first join and receive
-   * the current whiteboard state from an existing participant.
-   */
-  const applyFullSync = useCallback((scene: WhiteboardSceneData) => {
-    const api = excalidrawApiRef.current;
-    if (!api) return;
-
-    if (guardClearTimerRef.current !== null) {
-      clearTimeout(guardClearTimerRef.current);
-    }
-
+  const setRemoteGuardAndScheduleClear = useCallback(() => {
     isRemoteUpdateRef.current = true;
-
-    api.updateScene({
-      elements: scene.elements,
-      appState: scene.appState as Parameters<
-        typeof api.updateScene
-      >[0]["appState"],
-      captureUpdate: "NEVER",
-    });
-
-    if (scene.files) {
-      const fileValues = Object.values(scene.files);
-      if (fileValues.length > 0) {
-        try {
-          api.addFiles(fileValues as Parameters<typeof api.addFiles>[0]);
-        } catch {
-          // Gracefully ignore invalid file data.
-        }
-      }
-    }
-
-    guardClearTimerRef.current = setTimeout(() => {
-      guardClearTimerRef.current = null;
+    setTimeout(() => {
       isRemoteUpdateRef.current = false;
     }, 0);
   }, []);
 
-  // ── DataChannel — message receiver ────────────────────────────────────────
-  //
-  // The message handler is stored in a ref so it always calls the latest
-  // version of applyRemoteUpdate / applyFullSync without causing useDataChannel
-  // to re-subscribe on every render.  The stable wrapper `stableOnMessage`
-  // is the actual callback passed to useDataChannel.
+  const applyRemoteUpdate = useCallback((update: WhiteboardElementsUpdate) => {
+    const api = excalidrawApiRef.current;
+    if (!api) {
+      // Canvas not ready yet — queue; the flush poll will apply once API is available.
+      pendingUpdatesRef.current.push(update);
+      return;
+    }
+    setRemoteGuardAndScheduleClear();
+    api.updateScene({ elements: update.elements, captureUpdate: "NEVER" });
+    if (update.files) {
+      const vals = Object.values(update.files);
+      if (vals.length > 0) {
+        try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
+      }
+    }
+  }, [setRemoteGuardAndScheduleClear]);
+
+  const applyFullSync = useCallback((scene: WhiteboardSceneData) => {
+    const api = excalidrawApiRef.current;
+    if (!api) {
+      // Canvas not ready — a full-sync supersedes any pending incremental updates.
+      pendingFullSyncRef.current = scene;
+      pendingUpdatesRef.current = [];
+      return;
+    }
+    setRemoteGuardAndScheduleClear();
+    api.updateScene({
+      elements: scene.elements,
+      appState: scene.appState as Parameters<typeof api.updateScene>[0]["appState"],
+      captureUpdate: "NEVER",
+    });
+    if (scene.files) {
+      const vals = Object.values(scene.files);
+      if (vals.length > 0) {
+        try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
+      }
+    }
+  }, [setRemoteGuardAndScheduleClear]);
+
+  /**
+   * Flush pending updates that arrived before the Excalidraw API was ready.
+   *
+   * Runs on a 150 ms interval for the lifetime of the hook so it handles:
+   *   - Initial mount race (canvas chunk loads after first messages arrive)
+   *   - Canvas remounts (panel close → re-open)
+   *   - Annotation overlay becoming visible after being hidden
+   *
+   * The interval does NOT stop after the first flush — new messages queued
+   * after the canvas briefly loses its ref (e.g. during a re-render) need
+   * to be applied too.
+   */
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const api = excalidrawApiRef.current;
+      if (!api) return; // canvas not ready yet, try next tick
+
+      // A queued full-sync supersedes all incremental updates.
+      const pendingFull = pendingFullSyncRef.current;
+      if (pendingFull) {
+        pendingFullSyncRef.current = null;
+        pendingUpdatesRef.current = [];
+        setRemoteGuardAndScheduleClear();
+        api.updateScene({
+          elements: pendingFull.elements,
+          appState: pendingFull.appState as Parameters<typeof api.updateScene>[0]["appState"],
+          captureUpdate: "NEVER",
+        });
+        if (pendingFull.files) {
+          const vals = Object.values(pendingFull.files);
+          if (vals.length > 0) {
+            try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
+          }
+        }
+        return;
+      }
+
+      // Apply any queued incremental updates — only the latest matters.
+      const pending = pendingUpdatesRef.current;
+      if (pending.length === 0) return;
+      const latest = pending[pending.length - 1];
+      pendingUpdatesRef.current = [];
+      setRemoteGuardAndScheduleClear();
+      api.updateScene({ elements: latest.elements, captureUpdate: "NEVER" });
+      if (latest.files) {
+        const vals = Object.values(latest.files);
+        if (vals.length > 0) {
+          try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
+        }
+      }
+    }, 150);
+    return () => clearInterval(interval);
+  // setRemoteGuardAndScheduleClear is stable (no deps), safe to omit.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Message handler (stored in ref to avoid re-subscribing on every render) ─
 
   const onMessageRef = useRef<
     ((msg: ReceivedDataMessage<typeof WHITEBOARD_TOPIC>) => void) | null
@@ -279,53 +316,78 @@ export function useWhiteboardSync(): UseWhiteboardSyncReturn {
 
       switch (message.type) {
         case "scene-update": {
-          // Incremental update — elements + files only, no appState.
+          const isFromHost = senderIdentity === hostIdentityRef.current;
+          const isFromController =
+            senderIdentity != null && controllersRef.current.has(senderIdentity);
+          if (!isFromHost && !isFromController) return; // unauthorised sender
           applyRemoteUpdate(message.update);
           break;
         }
 
         case "full-sync": {
-          // Full scene for a newly-joined participant — includes appState.
           applyFullSync(message.scene);
-          // Update our cached scene so future request-sync responses are fresh.
           lastLocalSceneRef.current = {
             full: message.scene,
             update: { elements: message.scene.elements, files: message.scene.files },
           };
+          // Restore host-controlled state embedded in the full-sync.
+          if (message.whiteboardOpen !== undefined) {
+            setWhiteboardOpen(message.whiteboardOpen);
+          }
+          if (message.controllers !== undefined) {
+            const newSet = new Set(message.controllers);
+            setControllers(newSet);
+            controllersRef.current = newSet;
+          }
           break;
         }
 
         case "request-sync": {
-          // A participant just joined and wants the current scene.
-          if (!lastLocalSceneRef.current) break;
+          // Only respond if we have a scene OR we are the host (who always has
+          // authoritative state even with an empty canvas).
+          if (!lastLocalSceneRef.current && !isHostRef.current) break;
 
-          const scene = lastLocalSceneRef.current.full;
           const requester = message.sender;
-
-          // Respond once per requester identity per session.
           if (respondedToRef.current.has(requester)) break;
           respondedToRef.current.add(requester);
 
-          // Random jitter prevents thundering-herd when multiple participants
-          // all try to respond to the same newcomer simultaneously.
           const jitter = Math.random() * SYNC_RESPONSE_JITTER_MS;
           setTimeout(() => {
             const identity = localIdentityRef.current;
             if (!identity || !sendRef.current) return;
 
+            const scene = lastLocalSceneRef.current?.full ?? EMPTY_SCENE;
             const response: WhiteboardMessage = {
               type: "full-sync",
               scene,
               sender: identity,
+              whiteboardOpen: isHostRef.current
+                ? (hostWhiteboardOpenRef?.current ?? false)
+                : undefined,
+              controllers: Array.from(controllersRef.current),
             };
             sendRef.current(serializeMessage(response), {
               reliable: true,
               topic: WHITEBOARD_TOPIC,
               destinationIdentities: [requester],
-            }).catch(() => {
-              // Best-effort — participant may have left already.
-            });
+            }).catch(() => { /* best-effort */ });
           }, jitter);
+          break;
+        }
+
+        case "whiteboard-visibility": {
+          // Security: only accept from the designated host.
+          if (senderIdentity !== hostIdentityRef.current) return;
+          setWhiteboardOpen(message.open);
+          break;
+        }
+
+        case "whiteboard-permissions": {
+          // Security: only accept from the designated host.
+          if (senderIdentity !== hostIdentityRef.current) return;
+          const newSet = new Set(message.controllers);
+          setControllers(newSet);
+          controllersRef.current = newSet;
           break;
         }
       }
@@ -340,88 +402,125 @@ export function useWhiteboardSync(): UseWhiteboardSyncReturn {
     []
   );
 
-  // ── DataChannel hook ───────────────────────────────────────────────────────
+  // ── DataChannel ───────────────────────────────────────────────────────────
 
   const { send } = useDataChannel(WHITEBOARD_TOPIC, stableOnMessage);
 
-  // Keep the send ref current.
   useEffect(() => {
     sendRef.current = send;
   }, [send]);
 
-  // ── Request a full-sync on mount ──────────────────────────────────────────
+  // ── Initial request-sync on mount ─────────────────────────────────────────
+  // Sends a broadcast request-sync so the host (or any existing participant)
+  // delivers the current scene + visibility state in a full-sync response.
+  // 800 ms delay gives the DataChannel subscription time to be established.
 
   useEffect(() => {
-    // 500 ms delay ensures the DataChannel subscription is established before
-    // we broadcast the request to existing participants.
     const timer = setTimeout(() => {
       const identity = localIdentityRef.current;
       if (!identity || !sendRef.current) return;
-
-      const request: WhiteboardMessage = {
-        type: "request-sync",
-        sender: identity,
-      };
+      const request: WhiteboardMessage = { type: "request-sync", sender: identity };
       sendRef.current(serializeMessage(request), {
         reliable: true,
         topic: WHITEBOARD_TOPIC,
-      }).catch(() => {
-        // Transient — no one to sync from if we are the first participant.
-      });
-    }, 500);
-
+      }).catch(() => { /* transient — no peers yet */ });
+    }, 800);
     return () => clearTimeout(timer);
-    // Intentionally runs once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Handle local Excalidraw changes ───────────────────────────────────────
+  // ── Local change handler ──────────────────────────────────────────────────
 
   const handleLocalChange = useCallback((scene: WhiteboardScene) => {
     const identity = localIdentityRef.current;
     if (!identity) return;
-
-    // Build the incremental update (elements + files only) and cache it.
     const update = sceneToUpdate(scene);
-    // Also keep a full-data snapshot for responding to request-sync.
     const fullData = sceneToFullData(scene);
     lastLocalSceneRef.current = { full: fullData, update };
-
-    // Debounce — never publish on every pointer-move event.
-    if (debounceTimerRef.current !== null) {
-      clearTimeout(debounceTimerRef.current);
-    }
-
+    if (debounceTimerRef.current !== null) clearTimeout(debounceTimerRef.current);
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null;
       if (!sendRef.current) return;
-
       const message: WhiteboardMessage = {
         type: "scene-update",
         update,
         sender: identity,
         timestamp: Date.now(),
       };
-
       sendRef.current(serializeMessage(message), {
         reliable: true,
         topic: WHITEBOARD_TOPIC,
-      }).catch(() => {
-        // Best-effort — transient network issues should not break the UX.
-      });
+      }).catch(() => { /* best-effort */ });
     }, DEBOUNCE_MS);
   }, []);
 
-  // ── Cleanup on unmount ────────────────────────────────────────────────────
+  // ── Host broadcast helpers ────────────────────────────────────────────────
+
+  const broadcastVisibility = useCallback((open: boolean) => {
+    const identity = localIdentityRef.current;
+    if (!identity || !sendRef.current) return;
+    const message: WhiteboardMessage = {
+      type: "whiteboard-visibility",
+      open,
+      sender: identity,
+    };
+    sendRef.current(serializeMessage(message), {
+      reliable: true,
+      topic: WHITEBOARD_TOPIC,
+    }).catch(() => { /* best-effort */ });
+  }, []);
+
+  const broadcastPermissions = useCallback((controllerList: string[]) => {
+    const identity = localIdentityRef.current;
+    if (!identity || !sendRef.current) return;
+    const message: WhiteboardMessage = {
+      type: "whiteboard-permissions",
+      controllers: controllerList,
+      sender: identity,
+    };
+    sendRef.current(serializeMessage(message), {
+      reliable: true,
+      topic: WHITEBOARD_TOPIC,
+    }).catch(() => { /* best-effort */ });
+  }, []);
+
+  const syncControllersRef = useCallback((controllerList: string[]) => {
+    const newSet = new Set(controllerList);
+    setControllers(newSet);
+    controllersRef.current = newSet;
+  }, []);
+
+  /**
+   * Re-request the full scene from the host.
+   * Called by RoomContent when the whiteboard panel is newly opened for a
+   * participant.  The respondedToRef guard for the local identity is cleared
+   * first so the host will respond even though it already responded on mount.
+   */
+  const requestResync = useCallback(() => {
+    const identity = localIdentityRef.current;
+    if (!identity || !sendRef.current) return;
+
+    // Clear the guard so existing participants respond again.
+    respondedToRef.current.delete(identity);
+
+    const request: WhiteboardMessage = {
+      type: "request-sync",
+      sender: identity,
+    };
+    // Target the host specifically if we know their identity — guarantees the
+    // authoritative state arrives rather than any participant's cached copy.
+    const opts: DataPublishOptions = hostIdentityRef.current
+      ? { reliable: true, topic: WHITEBOARD_TOPIC, destinationIdentities: [hostIdentityRef.current] }
+      : { reliable: true, topic: WHITEBOARD_TOPIC };
+
+    sendRef.current(serializeMessage(request), opts).catch(() => { /* best-effort */ });
+  }, []);
+
+  // ── Cleanup ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
     return () => {
-      if (debounceTimerRef.current !== null) {
-        clearTimeout(debounceTimerRef.current);
-      }
-      if (guardClearTimerRef.current !== null) {
-        clearTimeout(guardClearTimerRef.current);
-      }
+      if (debounceTimerRef.current !== null) clearTimeout(debounceTimerRef.current);
     };
   }, []);
 
@@ -429,5 +528,11 @@ export function useWhiteboardSync(): UseWhiteboardSyncReturn {
     handleLocalChange,
     isRemoteUpdateRef,
     excalidrawApiRef,
+    whiteboardOpen,
+    controllers,
+    broadcastVisibility,
+    broadcastPermissions,
+    syncControllersRef,
+    requestResync,
   };
 }

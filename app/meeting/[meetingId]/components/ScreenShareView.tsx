@@ -24,7 +24,7 @@ export default function ScreenShareView({
     !screenShareTrackRef.publication.isMuted;
 
   return (
-    <div className="relative flex flex-col items-center justify-center flex-1 bg-black overflow-hidden">
+    <div className="relative flex flex-col items-center justify-center flex-1 h-full bg-black overflow-hidden">
       {/* Main stage */}
       <div className="relative w-full h-full">
         {hasTrack ? (
@@ -40,7 +40,7 @@ export default function ScreenShareView({
         )}
 
         {/* Label overlay */}
-        <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between gap-3">
+        {/* <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between gap-3">
           <span className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-full backdrop-blur-sm">
             Sharing: {sharerName}
           </span>
@@ -55,7 +55,7 @@ export default function ScreenShareView({
               Stop Sharing
             </Button>
           )}
-        </div>
+        </div> */}
       </div>
     </div>
   );

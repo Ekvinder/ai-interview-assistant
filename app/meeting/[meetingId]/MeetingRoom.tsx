@@ -60,6 +60,7 @@ import { meetingClientService } from '@/services/client/meeting.service';
 import { toast } from 'sonner';
 import ScreenShareView from './components/ScreenShareView';
 import { useBreakoutTransition } from '@/hooks/useBreakoutTransition';
+import { useWhiteboardSync } from '@/hooks/useWhiteboardSync';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -140,20 +141,28 @@ function DurationClock({ running }: { running: boolean }) {
 // - hasDisconnectedRef prevents a second disconnect if the parent re-renders
 //   while isSwitching is still true (which would re-run the effect because
 //   onDisconnectComplete is an inline arrow and always a new reference).
+// - onBeforeDisconnect is called synchronously before room.disconnect() so the
+//   parent can set isSwitchingRef.current = true before LiveKit fires onDisconnected,
+//   preventing handleLeave from navigating away during an intentional switch.
 // - The effect tracks the specific `isSwitching=true` epoch by resetting the
 //   guard when isSwitching flips back to false.
 
 function RoomTransitionHandler({
   isSwitching,
+  onBeforeDisconnect,
   onDisconnectComplete,
 }: {
   isSwitching: boolean;
+  onBeforeDisconnect: () => void;
   onDisconnectComplete: () => void;
 }) {
   const room = useRoomContext();
-  // Stable ref to the latest callback — avoids the effect re-running when the
-  // inline arrow in MeetingRoom's JSX creates a new function reference.
+
+  // Stable refs to callbacks — avoids the effect re-running when inline arrows
+  // in MeetingRoom's JSX create new function references on every render.
+  const onBeforeDisconnectRef = useRef(onBeforeDisconnect);
   const onDisconnectCompleteRef = useRef(onDisconnectComplete);
+  useEffect(() => { onBeforeDisconnectRef.current = onBeforeDisconnect; });
   useEffect(() => { onDisconnectCompleteRef.current = onDisconnectComplete; });
 
   // Guards against calling disconnect() more than once per switch epoch.
@@ -169,13 +178,22 @@ function RoomTransitionHandler({
     if (!room) return;
 
     hasDisconnectedRef.current = true;
+
+    // CRITICAL: call onBeforeDisconnect synchronously BEFORE room.disconnect().
+    // LiveKit fires the room's onDisconnected event during disconnect(), and
+    // MeetingRoom's handleLeave reads isSwitchingRef to decide whether to
+    // navigate away. If we don't set the ref first, handleLeave runs and
+    // redirects the user to /dashboard, destroying the transition.
+    onBeforeDisconnectRef.current();
+
     room.disconnect()
       .then(() => onDisconnectCompleteRef.current())
       .catch((err) => {
         console.error('[RoomTransitionHandler] disconnect error:', err);
         onDisconnectCompleteRef.current();
       });
-  // onDisconnectComplete is intentionally excluded — we read it via ref.
+
+  // Callback refs are intentionally excluded — we read them via ref.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSwitching, room]);
 
@@ -201,7 +219,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     userId === hostUserId ? 'approved' : 'pending',
   );
   const [loading, setLoading] = useState(true);
-  const leftRef       = useRef(false);
+  const leftRef        = useRef(false);
   const isSwitchingRef = useRef(false);
   const isHost = userId === hostUserId;
 
@@ -215,6 +233,10 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     initialCheckComplete,
   } = useBreakoutTransition(meeting.meetingId, userId, joinStatus);
 
+  // Keep isSwitchingRef synchronised with isSwitchingRooms.
+  // We update it both via useEffect (for async correctness) AND inline below
+  // whenever we call setIsSwitchingRooms, so that onDisconnected — which fires
+  // synchronously during room.disconnect() — always reads the current value.
   useEffect(() => { isSwitchingRef.current = isSwitchingRooms; }, [isSwitchingRooms]);
 
   // ── Guest admission ────────────────────────────────────────────────────────
@@ -291,6 +313,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
         if (!cancelled) {
           setToken(t);
           setServerUrl(u);
+          isSwitchingRef.current = false; // reset synchronously so next switch works immediately
           setIsSwitchingRooms(false);
           setReadyForTokenSwitch(false);
         }
@@ -298,6 +321,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
         if (!cancelled) {
           if (targetBreakoutId) {
             toast.error('Breakout room unavailable. Returning to main meeting.');
+            isSwitchingRef.current = true; // set synchronously before any disconnect fires
             setTargetBreakoutId(null);
             setIsSwitchingRooms(true);
             setReadyForTokenSwitch(true);
@@ -440,10 +464,24 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
         connect
         audio={false}
         video={false}
-        onDisconnected={handleLeave}
+        onDisconnected={() => {
+          // During an intentional breakout switch, RoomTransitionHandler calls
+          // room.disconnect() which fires onDisconnected. We must not treat this
+          // as a user leaving the meeting. isSwitchingRef is set synchronously
+          // in onBeforeDisconnect before room.disconnect() is called.
+          if (isSwitchingRef.current) return;
+          handleLeave();
+        }}
         onError={(err) => {
+          // Device permission errors are not meeting errors.
           if (err.name === 'NotAllowedError' || err.message?.toLowerCase().includes('permission')) {
             console.warn('[LiveKit] Device permission denied:', err.message);
+            return;
+          }
+          // During an intentional room switch, LiveKit may emit connection-closed
+          // errors as the room tears down. Suppress them — they are expected.
+          if (isSwitchingRef.current) {
+            console.debug('[LiveKit] Expected error during room switch:', err.message);
             return;
           }
           console.error('[LiveKit Meeting]', err);
@@ -453,6 +491,11 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       >
         <RoomTransitionHandler
           isSwitching={isSwitchingRooms}
+          onBeforeDisconnect={() => {
+            // Set the ref synchronously so handleLeave sees it before LiveKit
+            // fires onDisconnected during the room.disconnect() call below.
+            isSwitchingRef.current = true;
+          }}
           onDisconnectComplete={() => {
             setReadyForTokenSwitch(true);
             setToken(null);     // clears token so LiveKitRoom unmounts cleanly
@@ -597,10 +640,141 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   const { toggle: toggleCamera,       enabled: cameraEnabled, pending: cameraPending } = useTrackToggle({ source: Track.Source.Camera });
   const { toggle: toggleScreenShare,  pending: screenPending  }                        = useTrackToggle({ source: Track.Source.ScreenShare });
 
+  // ── Whiteboard sync & host-controlled permissions ─────────────────────────────────
+  // One useWhiteboardSync instance per room provides DataChannel sync, scene state,
+  // visibility broadcast (host), and permission management (host).
+
+  // Ref that stays current with hostWhiteboardOpen — passed to useWhiteboardSync
+  // so it can include the value in full-sync responses to late joiners.
+  const hostWhiteboardOpenRef = useRef(false);
+
+  const {
+    handleLocalChange: whiteboardHandleLocalChange,
+    isRemoteUpdateRef: whiteboardIsRemoteUpdateRef,
+    excalidrawApiRef: whiteboardExcalidrawApiRef,
+    whiteboardOpen: whiteboardOpenFromSync,
+    controllers: whiteboardControllers,
+    broadcastVisibility: whiteboardBroadcastVisibility,
+    broadcastPermissions: whiteboardBroadcastPermissions,
+    syncControllersRef: whiteboardSyncControllersRef,
+    requestResync: whiteboardRequestResync,
+  } = useWhiteboardSync(hostUserId, isHost, hostWhiteboardOpenRef);
+
+  // Host manages whiteboardOpen locally and broadcasts it.
+  // Participants use whiteboardOpenFromSync (received from host via DataChannel).
+  const [hostWhiteboardOpen, setHostWhiteboardOpen] = useState(false);
+  const whiteboardOpen = isHost ? hostWhiteboardOpen : whiteboardOpenFromSync;
+
+  // Keep the ref current so late-joiner full-sync responses include the right state.
+  useEffect(() => {
+    hostWhiteboardOpenRef.current = hostWhiteboardOpen;
+  }, [hostWhiteboardOpen]);
+
+  // Host manages the controllers set locally and broadcasts it.
+  // Participants use whiteboardControllers (received from host via DataChannel).
+  const [hostControllersArray, setHostControllersArray] = useState<string[]>([]);
+  const hostControllersSet = useMemo(() => new Set(hostControllersArray), [hostControllersArray]);
+  const controllers = isHost ? hostControllersSet : whiteboardControllers;
+
+  // Host: broadcast visibility only when the host explicitly changes it (skip mount).
+  // Broadcasting false on mount would reset any state participants already received
+  // from a prior full-sync, and sendRef may not be ready at mount time anyway.
+  const hostWhiteboardOpenMountedRef = useRef(false);
+  useEffect(() => {
+    if (!isHost) return;
+    if (!hostWhiteboardOpenMountedRef.current) {
+      hostWhiteboardOpenMountedRef.current = true;
+      return; // skip the initial mount run
+    }
+    whiteboardBroadcastVisibility(hostWhiteboardOpen);
+  }, [isHost, hostWhiteboardOpen, whiteboardBroadcastVisibility]);
+
+  // Host: keep the hook's internal controllers ref in sync and broadcast
+  // whenever the controllers array changes.
+  const didMountPermissionsRef = useRef(false);
+  useEffect(() => {
+    if (!isHost) return;
+    // Always sync the ref so request-sync responses carry the current list.
+    whiteboardSyncControllersRef(hostControllersArray);
+    // Skip broadcast on initial mount — no participants to notify yet.
+    if (!didMountPermissionsRef.current) { didMountPermissionsRef.current = true; return; }
+    whiteboardBroadcastPermissions(hostControllersArray);
+  }, [isHost, hostControllersArray, whiteboardBroadcastPermissions, whiteboardSyncControllersRef]);
+
+  // Participant: auto-open/close whiteboard panel driven by host broadcasts.
+  // When the panel transitions to open, trigger a resync so the freshly-mounted
+  // Excalidraw instance receives the current scene immediately.
+  // Skip during screen-share — the sidebar whiteboard is hidden during screen-share
+  // (!screenShareActive guard on render), so opening it causes unnecessary re-renders.
+  const prevWhiteboardOpenRef = useRef(false);
+  // Ref so the effect below can read screenShareActive without capturing a stale closure
+  // (screenShareActive is declared later in this component after the useTracks calls).
+  const screenShareActiveRef2 = useRef(false);
+  useEffect(() => {
+    if (isHost) return;
+    const prev = prevWhiteboardOpenRef.current;
+    prevWhiteboardOpenRef.current = whiteboardOpen;
+    if (whiteboardOpen && !prev) {
+      // Only open the sidebar panel when no screen-share is active.
+      // During screen-share, strokes arrive via DataChannel and the annotation
+      // overlay on the sharer's side handles the visual display.
+      if (!screenShareActiveRef2.current) {
+        setShowPanel('whiteboard');
+      }
+      setTimeout(() => whiteboardRequestResync(), 200);
+    } else if (!whiteboardOpen && prev && showPanel === 'whiteboard') {
+      setShowPanel(null);
+    }
+  // showPanel excluded — we only react to whiteboardOpen transitions.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, whiteboardOpen]);
+
+  // Host: grant drawing permission to a participant.
+  const hostGiveWhiteboardControl = useCallback((identity: string) => {
+    if (!isHost) return;
+    setHostControllersArray((list) =>
+      list.includes(identity) ? list : [...list, identity]
+    );
+  }, [isHost]);
+
+  // Host: revoke drawing permission from a participant.
+  const hostRemoveWhiteboardControl = useCallback((identity: string) => {
+    if (!isHost) return;
+    setHostControllersArray((list) => list.filter((id) => id !== identity));
+  }, [isHost]);
+
+
+  // ── Annotation mode ────────────────────────────────────────────────────────
+  // showAnnotation controls whether the WhiteboardPanel is rendered as a
+  // transparent overlay over the screen-share area (annotation mode) or as the
+  // normal right-sidebar (panel mode).
+  //
+  // Auto-activates when a screen share starts; auto-deactivates when it ends.
+  // Users can also manually hide/show the overlay via the whiteboard button.
+  // The WhiteboardCanvas instance stays mounted in both states — scene and
+  // collaboration state are never lost during the transition.
+  const [showAnnotation, setShowAnnotation] = useState(false);
+
   // ── Host controls ─────────────────────────────────────────────────────────
   const [isLocked,         setIsLocked]         = useState(false); // meeting lock placeholder
   const [whiteboardLocked, setWhiteboardLocked] = useState(false); // whiteboard lock state
-  const toggleWhiteboardLock = useCallback(() => setWhiteboardLocked((l) => !l), []);
+
+  // Ref so toggleWhiteboardLock can read the current controllers without capturing
+  // a stale closure over hostControllersArray.
+  const hostControllersArrayRef = useRef<string[]>([]);
+  useEffect(() => { hostControllersArrayRef.current = hostControllersArray; }, [hostControllersArray]);
+
+  const toggleWhiteboardLock = useCallback(() => {
+    setWhiteboardLocked((locked) => {
+      const next = !locked;
+      // When locking: broadcast an empty controllers list so all participants
+      // immediately become view-only.  When unlocking: restore the real list.
+      // getReadOnlyState enforces the lock locally; broadcast keeps remotes in sync.
+      const effectiveList = next ? [] : hostControllersArrayRef.current;
+      whiteboardBroadcastPermissions(effectiveList);
+      return next;
+    });
+  }, [whiteboardBroadcastPermissions]);
   const [removingIdentity, setRemovingIdentity] = useState<string | null>(null);
   const [endingMeeting,    setEndingMeeting]    = useState(false);
 
@@ -750,6 +924,46 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     return map;
   }, [allScreenShareTracks]);
 
+  // ── localIsSharing & screenShareActiveRef2 sync ───────────────────────────
+  // Declared here — before the annotation auto-detect effect — so both effects
+  // can read current values without order-of-declaration errors.
+  // localIsSharing must be derived from isScreenShareEnabled (not from the track
+  // list) to match the LiveKit hook's authoritative source.
+  const localIsSharing = isScreenShareEnabled;
+
+  // Keep screenShareActiveRef2 (used by the whiteboard auto-open effect above)
+  // and the original screenShareActiveRef in sync with the current value.
+  useEffect(() => {
+    screenShareActiveRef2.current = screenShareActive;
+  }, [screenShareActive]);
+
+  // ── Annotation mode auto-detect ────────────────────────────────────────────
+  // The annotation overlay is only activated for the LOCAL sharer.
+  // Other participants see strokes via their whiteboard sidebar which is already
+  // synced by the DataChannel.  Turning the overlay on for non-sharers covered
+  // their screen-share video with the Excalidraw canvas background.
+  const screenShareActiveRef = useRef(false);
+  useEffect(() => {
+    const wasActive = screenShareActiveRef.current;
+    screenShareActiveRef.current = screenShareActive;
+
+    if (screenShareActive && !wasActive) {
+      // Only the local sharer gets the transparent annotation overlay.
+      if (localIsSharing) {
+        setShowAnnotation(true);
+      }
+      // Close the normal whiteboard sidebar if open — the annotation overlay
+      // takes over for the sharer; participants receive strokes via DataChannel sync.
+      setShowPanel((p) => (p === 'whiteboard' ? null : p));
+    }
+
+    if (!screenShareActive && wasActive) {
+      setShowAnnotation(false);
+    }
+  // screenShareActiveRef is a stable ref, intentionally excluded.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenShareActive, localIsSharing]);
+
   if (connState === ConnectionState.Connecting) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-4 text-muted-foreground">
@@ -769,8 +983,6 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
       </div>
     );
   }
-
-  const localIsSharing = isScreenShareEnabled;
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
@@ -807,14 +1019,20 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
       {/* Body: main stage + optional participant panel */}
       <div className="flex flex-1 overflow-hidden min-h-0">
-
+  {/*classname = flex main stage buffering did not happing but next minimal in-h-0 participant panel sm:inline hidden */}
         {/* Main stage */}
-        {/*div contain classname flex flex-*/}
+        
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           {screenShareActive && activeScreenShare ? (
             <div className="flex flex-col md:flex-row flex-1 overflow-hidden bg-black">
               {/* Screen share primary stage — uses ScreenShareView which guards isMuted */}
-              <div className="flex-1 min-h-0">
+              {/*
+               * position:relative is required here so that the annotation overlay
+               * (WhiteboardPanel with annotationMode=true, absolute inset-0) is
+               * clipped to this container and never bleeds over the thumbnail
+               * sidebar, control bar, or header.
+               */}
+              <div className="relative flex-1 min-h-0 flex flex-col">
                 <ScreenShareView
                   screenShareTrackRef={activeScreenShare}
                   sharerName={
@@ -824,6 +1042,33 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
                   isLocalSharer={localIsSharing && activeScreenShare.participant.identity === localParticipant?.identity}
                   onStopShare={handleScreenShare}
                 />
+                {/* Transparent annotation overlay — always mounted while screen share
+                    is active so WhiteboardCanvas (and useWhiteboardSync) are never
+                    destroyed.  Scene, undo history, and DataChannel state persist
+                    even when the overlay is visually hidden.
+                    The wrapper is absolute inset-0 so it never affects flow layout.
+                    pointer-events:none + opacity:0 hides it without unmounting. */}
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    pointerEvents: showAnnotation ? 'auto' : 'none',
+                    opacity: showAnnotation ? 1 : 0,
+                  }}
+                >
+                  <WhiteboardPanel
+                    meetingId={meeting.meetingId}
+                    isHost={isHost}
+                    whiteboardLocked={whiteboardLocked}
+                    localIdentity={localParticipant?.identity ?? ''}
+                    onToggleLock={toggleWhiteboardLock}
+                    annotationMode
+                    onClose={() => setShowAnnotation(false)}
+                    controllers={controllers}
+                    excalidrawApiRef={whiteboardExcalidrawApiRef}
+                    isRemoteUpdateRef={whiteboardIsRemoteUpdateRef}
+                    onLocalChange={whiteboardHandleLocalChange}
+                  />
+                </div>
               </div>
               {/* Thumbnail sidebar */}
               <div className="shrink-0 h-32 md:h-auto md:w-64 lg:w-72 bg-zinc-950 flex md:flex-col gap-2 p-2 md:p-3 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto border-t md:border-t-0 md:border-l border-white/10 transition-all duration-300 ease-in-out">
@@ -866,6 +1111,10 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             cameraByIdentity={cameraByIdentity}
             screenShareByIdentity={screenShareByIdentity}
             onClose={() => setShowPanel(null)}
+            isLocalHost={isHost}
+            controllers={controllers}
+            onGiveWhiteboardControl={isHost ? hostGiveWhiteboardControl : undefined}
+            onRemoveWhiteboardControl={isHost ? hostRemoveWhiteboardControl : undefined}
           />
         )}
 
@@ -882,15 +1131,25 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
        
 
-        {/* Whiteboard panel */}
-        {showPanel === 'whiteboard' && (
+        {/* Whiteboard panel (normal sidebar — only shown when not in screen-share
+            annotation mode; in annotation mode the canvas lives inside the
+            screen-share container above as an absolute overlay) */}
+        {showPanel === 'whiteboard' && !screenShareActive && (
           <WhiteboardPanel
             meetingId={meeting.meetingId}
             isHost={isHost}
             whiteboardLocked={whiteboardLocked}
             localIdentity={localParticipant?.identity ?? ''}
             onToggleLock={toggleWhiteboardLock}
-            onClose={() => setShowPanel(null)}
+            controllers={controllers}
+            excalidrawApiRef={whiteboardExcalidrawApiRef}
+            isRemoteUpdateRef={whiteboardIsRemoteUpdateRef}
+            onLocalChange={whiteboardHandleLocalChange}
+            onClose={() => {
+              setShowPanel(null);
+              // Host closing the panel closes the whiteboard for everyone.
+              if (isHost) setHostWhiteboardOpen(false);
+            }}
           />
         )}
 
@@ -951,11 +1210,55 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             onToggle={handleScreenShare} disabled={screenPending} />
         )}
         
-        <ControlButton active={showPanel === 'whiteboard'}
-          activeIcon={<PenTool className="w-5 h-5" />}
-          inactiveIcon={<PenTool className="w-5 h-5" />}
-          activeLabel="Hide whiteboard" inactiveLabel="Whiteboard"
-          onToggle={() => togglePanel('whiteboard')} highlight={showPanel === 'whiteboard'} />
+        {/* Whiteboard / Annotate button.
+            During screen share: toggles the transparent annotation overlay.
+            Normal mode: toggles the whiteboard sidebar panel. */}
+
+
+        {screenShareActive ? (
+          <ControlButton
+            active={showAnnotation}
+            activeIcon={<PenTool className="w-5 h-5" />}
+            inactiveIcon={<PenTool className="w-5 h-5" />}
+            activeLabel="Hide annotations"
+            inactiveLabel="Annotate"
+            onToggle={() => setShowAnnotation((v) => !v)}
+            highlight={showAnnotation}
+          />
+        ) : isHost ? (
+          /* Host: whiteboard button opens for EVERYONE */
+          <ControlButton active={whiteboardOpen}
+            activeIcon={<PenTool className="w-5 h-5" />}
+            inactiveIcon={<PenTool className="w-5 h-5" />}
+            activeLabel="Close whiteboard" inactiveLabel="Open whiteboard"
+            onToggle={() => {
+              const next = !hostWhiteboardOpen;
+              setHostWhiteboardOpen(next);
+              // Also control the local panel visibility for the host.
+              if (next) {
+                setShowPanel('whiteboard');
+              } else {
+                setShowPanel((p) => p === 'whiteboard' ? null : p);
+              }
+            }}
+            highlight={whiteboardOpen} />
+        ) : (
+          /* Participants: always can toggle whiteboard — no longer disabled. */
+          <ControlButton active={showPanel === 'whiteboard'}
+            activeIcon={<PenTool className="w-5 h-5" />}
+            inactiveIcon={<PenTool className="w-5 h-5" />}
+            activeLabel="Hide whiteboard" inactiveLabel="Whiteboard"
+            onToggle={() => {
+              if (showPanel === 'whiteboard') {
+                setShowPanel(null);
+              } else {
+                setShowPanel('whiteboard');
+                // Pull the latest scene from the host when manually opening.
+                setTimeout(() => whiteboardRequestResync(), 200);
+              }
+            }}
+            highlight={showPanel === 'whiteboard'} />
+        )}
         <ControlButton active={showPanel === 'participants'}
           activeIcon={<Users className="w-5 h-5" />}
           inactiveIcon={<Users className="w-5 h-5" />}
@@ -1220,6 +1523,11 @@ function ParticipantPanel({
   cameraByIdentity,
   screenShareByIdentity,
   onClose,
+  // Host-controlled whiteboard permission props
+  isLocalHost,
+  controllers,
+  onGiveWhiteboardControl,
+  onRemoveWhiteboardControl,
 }: {
   participants: Participant[];
   localParticipant: Participant | undefined;
@@ -1228,6 +1536,11 @@ function ParticipantPanel({
   cameraByIdentity: Map<string, TrackReferenceOrPlaceholder>;
   screenShareByIdentity: Map<string, true>;
   onClose: () => void;
+  // Host whiteboard control callbacks — only called when isLocalHost is true
+  isLocalHost: boolean;
+  controllers: ReadonlySet<string>;
+  onGiveWhiteboardControl?: (identity: string) => void;
+  onRemoveWhiteboardControl?: (identity: string) => void;
 }) {
   return (
     <aside
@@ -1271,6 +1584,10 @@ function ParticipantPanel({
               micRef={micByIdentity.get(participant.identity)}
               cameraRef={cameraByIdentity.get(participant.identity)}
               isScreenSharing={screenShareByIdentity.has(participant.identity)}
+              isLocalHost={isLocalHost}
+              hasWhiteboardControl={controllers.has(participant.identity)}
+              onGiveWhiteboardControl={onGiveWhiteboardControl}
+              onRemoveWhiteboardControl={onRemoveWhiteboardControl}
             />
           ))
         )}
@@ -1289,6 +1606,10 @@ function PanelRow({
   micRef,
   cameraRef,
   isScreenSharing,
+  isLocalHost,
+  hasWhiteboardControl,
+  onGiveWhiteboardControl,
+  onRemoveWhiteboardControl,
 }: {
   participant: Participant;
   isLocal: boolean;
@@ -1296,6 +1617,10 @@ function PanelRow({
   micRef: TrackReferenceOrPlaceholder | undefined;
   cameraRef: TrackReferenceOrPlaceholder | undefined;
   isScreenSharing: boolean;
+  isLocalHost: boolean;
+  hasWhiteboardControl: boolean;
+  onGiveWhiteboardControl?: (identity: string) => void;
+  onRemoveWhiteboardControl?: (identity: string) => void;
 }) {
   const { name, identity } = useParticipantInfo({ participant });
   const isSpeaking         = useIsSpeaking(participant);
@@ -1311,48 +1636,84 @@ function PanelRow({
   const abbr  = makeInitials(label);
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40 transition-colors">
-      {/* Avatar with speaking ring */}
-      <div className={`relative shrink-0 rounded-full p-0.5 transition-colors ${isSpeaking ? 'bg-emerald-400' : 'bg-transparent'}`}>
-        <Avatar className="w-8 h-8">
-          <AvatarFallback className="bg-muted text-foreground text-xs font-semibold">
-            {abbr}
-          </AvatarFallback>
-        </Avatar>
+    <div className="flex flex-col px-4 py-2.5 hover:bg-muted/40 transition-colors gap-1.5">
+      <div className="flex items-center gap-3">
+        {/* Avatar with speaking ring */}
+        <div className={`relative shrink-0 rounded-full p-0.5 transition-colors ${isSpeaking ? 'bg-emerald-400' : 'bg-transparent'}`}>
+          <Avatar className="w-8 h-8">
+            <AvatarFallback className="bg-muted text-foreground text-xs font-semibold">
+              {abbr}
+            </AvatarFallback>
+          </Avatar>
+        </div>
+
+        {/* Name + badges */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-medium truncate">
+              {label}{isLocal ? ' (You)' : ''}
+            </span>
+            {isHost && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-500 bg-amber-500/10 rounded px-1 py-0.5 shrink-0">
+                <Crown className="w-2.5 h-2.5" />Host
+              </span>
+            )}
+            {hasWhiteboardControl && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-blue-500 bg-blue-500/10 rounded px-1 py-0.5 shrink-0">
+                <PenTool className="w-2.5 h-2.5" />Drawing
+              </span>
+            )}
+          </div>
+          {/* Status icons row */}
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className={`flex items-center gap-0.5 text-[10px] ${micMuted ? 'text-red-500' : 'text-muted-foreground'}`} title={micMuted ? 'Muted' : 'Mic on'}>
+              {micMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+            </span>
+            <span className={`flex items-center gap-0.5 text-[10px] ${cameraOff ? 'text-red-500' : 'text-muted-foreground'}`} title={cameraOff ? 'Camera off' : 'Camera on'}>
+              {cameraOff ? <VideoOff className="w-3 h-3" /> : <Video className="w-3 h-3" />}
+            </span>
+            {isScreenSharing && (
+              <span className="flex items-center gap-0.5 text-[10px] text-blue-500" title="Sharing screen">
+                <Monitor className="w-3 h-3" />
+              </span>
+            )}
+            {isSpeaking && (
+              <span className="flex items-center gap-0.5 text-[10px] text-emerald-500" title="Speaking">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
+              </span>
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* Name + badges */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-sm font-medium truncate">
-            {label}{isLocal ? ' (You)' : ''}
-          </span>
-          {isHost && (
-            <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-500 bg-amber-500/10 rounded px-1 py-0.5 shrink-0">
-              <Crown className="w-2.5 h-2.5" />Host
-            </span>
+      {/* Whiteboard control buttons — host only, non-host participants only */}
+      {isLocalHost && !isLocal && !isHost && (
+        <div className="pl-11 flex gap-1.5">
+          {hasWhiteboardControl ? (
+            <button
+              onClick={() => onRemoveWhiteboardControl?.(identity ?? '')}
+              className="flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 transition-colors border border-blue-500/20"
+              title={`Remove whiteboard control from ${label}`}
+              aria-label={`Remove whiteboard control from ${label}`}
+              disabled={!identity}
+            >
+              <PenTool className="w-3 h-3" />
+              Remove Drawing
+            </button>
+          ) : (
+            <button
+              onClick={() => onGiveWhiteboardControl?.(identity ?? '')}
+              className="flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded bg-muted text-muted-foreground hover:bg-blue-500/10 hover:text-blue-500 transition-colors border border-border"
+              title={`Give whiteboard control to ${label}`}
+              aria-label={`Give whiteboard control to ${label}`}
+              disabled={!identity}
+            >
+              <PenTool className="w-3 h-3" />
+              Allow Drawing
+            </button>
           )}
         </div>
-        {/* Status icons row */}
-        <div className="flex items-center gap-2 mt-0.5">
-          <span className={`flex items-center gap-0.5 text-[10px] ${micMuted ? 'text-red-500' : 'text-muted-foreground'}`} title={micMuted ? 'Muted' : 'Mic on'}>
-            {micMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
-          </span>
-          <span className={`flex items-center gap-0.5 text-[10px] ${cameraOff ? 'text-red-500' : 'text-muted-foreground'}`} title={cameraOff ? 'Camera off' : 'Camera on'}>
-            {cameraOff ? <VideoOff className="w-3 h-3" /> : <Video className="w-3 h-3" />}
-          </span>
-          {isScreenSharing && (
-            <span className="flex items-center gap-0.5 text-[10px] text-blue-500" title="Sharing screen">
-              <Monitor className="w-3 h-3" />
-            </span>
-          )}
-          {isSpeaking && (
-            <span className="flex items-center gap-0.5 text-[10px] text-emerald-500" title="Speaking">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
-            </span>
-          )}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

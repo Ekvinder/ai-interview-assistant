@@ -27,12 +27,49 @@ export interface WhiteboardPanelProps {
   onClose: () => void;
   /** LiveKit local participant identity — passed into canvas for sender tagging */
   localIdentity: string;
+  /**
+   * When true the panel becomes a transparent absolute overlay positioned over
+   * the shared screen.  The canvas background is cleared and the panel header
+   * floats as a compact toolbar above the annotation layer.
+   *
+   * The WhiteboardCanvas instance is never re-mounted between modes — scene
+   * state, undo history, and collaboration all persist across the transition.
+   */
+  annotationMode?: boolean;
+
+  /**
+   * Set of identities that currently have drawing permission (host excluded).
+   * Used to compute readOnly for participants who have been granted control.
+   */
+  controllers?: ReadonlySet<string>;
+
+  // ── Injected sync bindings ──────────────────────────────────────────────────
+  // useWhiteboardSync lives in RoomContent (one instance per room).
+  // These callbacks and refs are passed down so WhiteboardCanvas does not need
+  // its own DataChannel subscription.
+
+  /** Stable ref to the ExcalidrawImperativeAPI — assigned by WhiteboardCanvas. */
+  excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
+  /** Guard ref — true while a remote updateScene() call is in progress. */
+  isRemoteUpdateRef: React.RefObject<boolean>;
+  /** Called by WhiteboardCanvas.onChange to publish incremental updates. */
+  onLocalChange: (scene: { elements: ExcalidrawElements; appState: ExcalidrawAppState; files: ExcalidrawFiles }) => void;
 }
 
 export interface WhiteboardCanvasProps {
   readOnly: boolean;
   /** LiveKit local participant identity */
   localIdentity: string;
+  /**
+   * When true the Excalidraw canvas renders with a transparent background so
+   * annotations appear directly over a shared screen.
+   */
+  annotationMode?: boolean;
+
+  // ── Injected sync bindings (from RoomContent via WhiteboardPanel) ───────────
+  excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
+  isRemoteUpdateRef: React.RefObject<boolean>;
+  onLocalChange: (scene: { elements: ExcalidrawElements; appState: ExcalidrawAppState; files: ExcalidrawFiles }) => void;
 }
 
 // ── Scene type (safe, uses only inferred types) ───────────────────────────────
@@ -104,8 +141,34 @@ export type WhiteboardMessage =
       /**
        * Full scene delivered to a newly-joined participant.
        * Includes appState so they get the correct initial tool/style state.
+       * Also carries current whiteboard visibility and controller list so late
+       * joiners can restore the full host-controlled state without extra round trips.
        */
       type: "full-sync";
       scene: WhiteboardSceneData;
+      sender: string;
+      /** Whether the whiteboard is currently open for all participants */
+      whiteboardOpen?: boolean;
+      /** Identities that currently have drawing permission (host is always implicit) */
+      controllers?: string[];
+    }
+  | {
+      /**
+       * Host broadcasts the whiteboard open/close state to all participants.
+       * Participants must show or hide the whiteboard without any manual action.
+       */
+      type: "whiteboard-visibility";
+      open: boolean;
+      sender: string;
+    }
+  | {
+      /**
+       * Host broadcasts the current set of identities that have drawing
+       * permission.  The host is always authoritative — participants must
+       * not trust locally-modified versions of this list.
+       */
+      type: "whiteboard-permissions";
+      /** Full list of controller identities (host excluded — host is always implicit) */
+      controllers: string[];
       sender: string;
     };
