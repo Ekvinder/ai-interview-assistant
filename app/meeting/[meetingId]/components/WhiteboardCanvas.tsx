@@ -84,14 +84,6 @@ export default function WhiteboardCanvas({
       <Excalidraw
         excalidrawAPI={(instance) => {
           excalidrawApiRef.current = instance;
-          // Apply the correct background immediately after the API is available
-          // (initialData only applies on first mount).
-          if (annotationMode) {
-            instance.updateScene({
-              appState: { viewBackgroundColor: "transparent" } as Parameters<typeof instance.updateScene>[0]["appState"],
-              captureUpdate: "NEVER",
-            });
-          }
         }}
         viewModeEnabled={readOnly}
         theme="dark"

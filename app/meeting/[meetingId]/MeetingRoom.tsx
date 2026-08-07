@@ -949,9 +949,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
     if (screenShareActive && !wasActive) {
       // Only the local sharer gets the transparent annotation overlay.
-      if (localIsSharing) {
-        setShowAnnotation(true);
-      }
+      setShowAnnotation(true);
       // Close the normal whiteboard sidebar if open — the annotation overlay
       // takes over for the sharer; participants receive strokes via DataChannel sync.
       setShowPanel((p) => (p === 'whiteboard' ? null : p));
@@ -1019,8 +1017,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
       {/* Body: main stage + optional participant panel */}
       <div className="flex flex-1 overflow-hidden min-h-0">
-  {/*classname = flex main stage buffering did not happing but next minimal in-h-0 participant panel sm:inline hidden */}
-        {/* Main stage */}
+          {/* Main stage */}
         
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           {screenShareActive && activeScreenShare ? (
@@ -1832,6 +1829,7 @@ function ChatPanel({
       </div>
 
       {/* Messages */}
+       {/* classname message Square */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">

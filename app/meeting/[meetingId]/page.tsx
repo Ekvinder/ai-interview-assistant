@@ -33,15 +33,20 @@ export default async function MeetingPage({
   let meeting: IMeeting | null = null;
   try {
     meeting = await MeetingService.getMeetingByMeetingId(meetingId);
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    const isDatabaseIssue = /mongo|mongodb|server selection|timed out|ECONN|econn/i.test(message);
+
     return (
       <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
         <AlertCircle className="w-12 h-12 text-muted-foreground opacity-40" />
-        <h1 className="text-2xl font-bold">Meeting Not Found</h1>
+        <h1 className="text-2xl font-bold">
+          {isDatabaseIssue ? 'Unable to load meeting' : 'Meeting Not Found'}
+        </h1>
         <p className="text-muted-foreground text-sm max-w-sm">
-          The meeting ID{' '}
-          <span className="font-mono font-semibold">{meetingId}</span> does not
-          exist or has been removed.
+          {isDatabaseIssue
+            ? 'The meeting service is temporarily unavailable. Please try again in a moment.'
+            : <>The meeting ID{' '}<span className="font-mono font-semibold">{meetingId}</span> does not exist or has been removed.</>}
         </p>
         <Link href="/dashboard">
           <Button variant="outline">Return to Dashboard</Button>

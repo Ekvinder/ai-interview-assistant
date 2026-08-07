@@ -26,7 +26,7 @@ if (!globalWithMongoose.mongoose) {
 const cached = globalWithMongoose.mongoose as MongooseCache;
 
 export async function connectToDatabase() {
-  if (cached.conn) {
+  if (cached.conn?.connection.readyState === 1) {
     return cached.conn;
   }
 
@@ -40,10 +40,24 @@ export async function connectToDatabase() {
       connectTimeoutMS: 10000,  // TCP connection timeout
     };
 
-    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
-      return mongoose;
-    });
+    cached.promise = (async () => {
+      try {
+        const mongooseInstance = await mongoose.connect(MONGODB_URI, opts);
+        cached.conn = mongooseInstance;
+        return mongooseInstance;
+      } catch (error) {
+        cached.conn = null;
+        cached.promise = null;
+        throw error;
+      }
+    })();
   }
-  cached.conn = await cached.promise;
-  return cached.conn;
+
+  try {
+    return await cached.promise;
+  } catch (error) {
+    cached.conn = null;
+    cached.promise = null;
+    throw error;
+  }
 }

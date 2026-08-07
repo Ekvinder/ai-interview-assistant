@@ -228,9 +228,13 @@ export function useWhiteboardSync(
       return;
     }
     setRemoteGuardAndScheduleClear();
+    const currentAppState = api.getAppState();
     api.updateScene({
       elements: scene.elements,
-      appState: scene.appState as Parameters<typeof api.updateScene>[0]["appState"],
+      appState: {
+        ...scene.appState,
+        viewBackgroundColor: currentAppState.viewBackgroundColor,
+      } as Parameters<typeof api.updateScene>[0]["appState"],
       captureUpdate: "NEVER",
     });
     if (scene.files) {
@@ -264,9 +268,13 @@ export function useWhiteboardSync(
         pendingFullSyncRef.current = null;
         pendingUpdatesRef.current = [];
         setRemoteGuardAndScheduleClear();
+        const currentAppState = api.getAppState();
         api.updateScene({
           elements: pendingFull.elements,
-          appState: pendingFull.appState as Parameters<typeof api.updateScene>[0]["appState"],
+          appState: {
+            ...pendingFull.appState,
+            viewBackgroundColor: currentAppState.viewBackgroundColor,
+          } as Parameters<typeof api.updateScene>[0]["appState"],
           captureUpdate: "NEVER",
         });
         if (pendingFull.files) {
@@ -308,7 +316,7 @@ export function useWhiteboardSync(
       const message = deserializeMessage(msg.payload);
       if (!message) return;
 
-      const senderIdentity = msg.from?.identity;
+      const senderIdentity = msg.from?.identity || message.sender;
       const localIdentity = localIdentityRef.current;
 
       // Never process our own echo.

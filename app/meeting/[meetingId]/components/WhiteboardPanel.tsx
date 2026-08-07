@@ -102,7 +102,7 @@ export default function WhiteboardPanel({
           </span>
 
           {/* Lock / Unlock — host only */}
-          {/* span class name flex items center gap-1.5*/}
+          
           {isHost && (
             <Button
               variant="ghost"
