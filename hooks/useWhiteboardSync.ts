@@ -47,6 +47,21 @@
  * stack pollution and internal state resets.  The isRemoteUpdateRef guard is
  * cleared with setTimeout(0) — a macrotask — to outlive React 18's concurrent
  * renderer scheduling.
+ *
+ * ── Re-sync design ────────────────────────────────────────────────────────────
+ *
+ * Every `request-sync` message is answered unconditionally — there is no
+ * per-requester deduplication.  The original `respondedToRef` guard was intended
+ * to prevent a flood of responses when many participants join simultaneously, but
+ * it was fundamentally broken: `requestResync()` (called when a participant
+ * reopens the whiteboard panel) deleted the identity from the *local* node's
+ * `respondedToRef`, not from the *host's* — so the host's guard was never
+ * cleared and the participant's re-sync request was permanently silenced.
+ *
+ * Storm prevention is handled instead by the jitter delay (up to 300 ms) that
+ * already exists on each response — responses from multiple nodes are naturally
+ * spread over time, and the participant applies only the last `full-sync` it
+ * receives anyway (pendingFullSyncRef is overwritten, not appended).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -139,7 +154,10 @@ export function useWhiteboardSync(
     update: WhiteboardElementsUpdate;
   } | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const respondedToRef = useRef(new Set<string>());
+  // sendRef is intentionally typed as a mutable ref that starts null and is
+  // populated synchronously on the first render from useDataChannel's send.
+  // Using a ref rather than a state value avoids triggering re-renders when
+  // the send function identity changes (e.g. after a reconnect).
   const sendRef = useRef<
     ((payload: Uint8Array, options: DataPublishOptions) => Promise<void>) | null
   >(null);
@@ -351,14 +369,24 @@ export function useWhiteboardSync(
         }
 
         case "request-sync": {
-          // Only respond if we have a scene OR we are the host (who always has
-          // authoritative state even with an empty canvas).
+          // Respond with the full current scene to anyone who asks, as long as
+          // we have a scene to share OR we are the host (who always has
+          // authoritative state, even with a blank canvas).
+          //
+          // There is deliberately no per-requester deduplication here.
+          // The old `respondedToRef` guard was broken: the participant called
+          // `requestResync()` which deleted the identity from the *local* node's
+          // set, not from the *host's* — so the host's guard was never cleared
+          // and subsequent re-sync requests were permanently silenced.
+          //
+          // Storm prevention (many participants joining at once) is handled by
+          // the random jitter below — responses are naturally spread over up to
+          // SYNC_RESPONSE_JITTER_MS milliseconds, and the participant always
+          // applies only the last full-sync it receives (pendingFullSyncRef is
+          // overwritten on each arrival, not appended).
           if (!lastLocalSceneRef.current && !isHostRef.current) break;
 
           const requester = message.sender;
-          if (respondedToRef.current.has(requester)) break;
-          respondedToRef.current.add(requester);
-
           const jitter = Math.random() * SYNC_RESPONSE_JITTER_MS;
           setTimeout(() => {
             const identity = localIdentityRef.current;
@@ -414,6 +442,12 @@ export function useWhiteboardSync(
 
   const { send } = useDataChannel(WHITEBOARD_TOPIC, stableOnMessage);
 
+  // Keep sendRef in sync with the `send` function from useDataChannel.
+  // Assigning synchronously during render (in addition to the useEffect) means
+  // handleLocalChange and broadcast helpers never see a stale null ref on the
+  // very first render — important for the 800 ms mount-time request-sync and
+  // for any host broadcast triggered before the first effect flush.
+  sendRef.current = send;
   useEffect(() => {
     sendRef.current = send;
   }, [send]);
@@ -501,15 +535,16 @@ export function useWhiteboardSync(
   /**
    * Re-request the full scene from the host.
    * Called by RoomContent when the whiteboard panel is newly opened for a
-   * participant.  The respondedToRef guard for the local identity is cleared
-   * first so the host will respond even though it already responded on mount.
+   * participant so the freshly-mounted Excalidraw gets the latest scene even if
+   * the initial mount-time request-sync was sent long before the panel opened.
+   *
+   * The request is sent directly to the host (when their identity is known) so
+   * the response is guaranteed to carry authoritative state rather than a
+   * potentially stale scene cached by another participant.
    */
   const requestResync = useCallback(() => {
     const identity = localIdentityRef.current;
     if (!identity || !sendRef.current) return;
-
-    // Clear the guard so existing participants respond again.
-    respondedToRef.current.delete(identity);
 
     const request: WhiteboardMessage = {
       type: "request-sync",
