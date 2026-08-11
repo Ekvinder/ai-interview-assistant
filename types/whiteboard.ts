@@ -50,8 +50,6 @@ export interface WhiteboardPanelProps {
 
   /** Stable ref to the ExcalidrawImperativeAPI — assigned by WhiteboardCanvas. */
   excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
-  /** Guard ref — true while a remote updateScene() call is in progress. */
-  isRemoteUpdateRef: React.RefObject<boolean>;
   /** Called by WhiteboardCanvas.onChange to publish incremental updates. */
   onLocalChange: (scene: { elements: ExcalidrawElements; appState: ExcalidrawAppState; files: ExcalidrawFiles }) => void;
 }
@@ -68,7 +66,6 @@ export interface WhiteboardCanvasProps {
 
   // ── Injected sync bindings (from RoomContent via WhiteboardPanel) ───────────
   excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
-  isRemoteUpdateRef: React.RefObject<boolean>;
   onLocalChange: (scene: { elements: ExcalidrawElements; appState: ExcalidrawAppState; files: ExcalidrawFiles }) => void;
 }
 
@@ -149,6 +146,8 @@ export type WhiteboardMessage =
       sender: string;
       /** Whether the whiteboard is currently open for all participants */
       whiteboardOpen?: boolean;
+      /** Whether the annotation overlay is currently active */
+      annotationActive?: boolean;
       /** Identities that currently have drawing permission (host is always implicit) */
       controllers?: string[];
     }
@@ -159,6 +158,14 @@ export type WhiteboardMessage =
        */
       type: "whiteboard-visibility";
       open: boolean;
+      sender: string;
+    }
+  | {
+      /**
+       * Host broadcasts the annotation overlay active state to all participants.
+       */
+      type: "annotation-active";
+      active: boolean;
       sender: string;
     }
   | {

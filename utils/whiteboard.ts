@@ -32,3 +32,13 @@ export function getReadOnlyState(
   // Default: view-only.
   return true;
 }
+
+/**
+ * Deterministic guard to prevent infinite DataChannel loops.
+ * Computes a simple hash of the elements by summing their versions and length.
+ * We use this to decide if an Excalidraw onChange event actually modified the
+ * scene content or if it was just a remote update being applied (or a non-element change).
+ */
+export function getSceneVersion(elements: readonly { version?: number }[]): number {
+  return elements.reduce((acc, el) => acc + (el.version || 0), 0) + elements.length;
+}

@@ -64,7 +64,7 @@
  * receives anyway (pendingFullSyncRef is overwritten, not appended).
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useLayoutEffect } from "react";
 import type React from "react";
 import { useDataChannel, useLocalParticipant } from "@livekit/components-react";
 import type { ReceivedDataMessage } from "@livekit/components-core";
@@ -82,6 +82,7 @@ import {
   serializeMessage,
   deserializeMessage,
 } from "@/lib/whiteboard/serializer";
+import { getSceneVersion } from "@/utils/whiteboard";
 
 const WHITEBOARD_TOPIC = "whiteboard" as const;
 const DEBOUNCE_MS = 250;
@@ -114,17 +115,19 @@ const EMPTY_SCENE: WhiteboardSceneData = {
 
 export interface UseWhiteboardSyncReturn {
   handleLocalChange: (scene: WhiteboardScene) => void;
-  isRemoteUpdateRef: React.RefObject<boolean>;
   excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
 
   // ── Participant-side reactive state ───────────────────────────────────────
   /** Whether the whiteboard is open (driven by host broadcasts + full-sync). */
   whiteboardOpen: boolean;
+  /** Whether the annotation overlay is active (driven by host broadcasts + full-sync). */
+  annotationActive: boolean;
   /** Identities with explicit drawing permission (host excluded). */
   controllers: ReadonlySet<string>;
 
   // ── Host-side actions ─────────────────────────────────────────────────────
   broadcastVisibility: (open: boolean) => void;
+  broadcastAnnotationState: (active: boolean) => void;
   broadcastPermissions: (controllers: string[]) => void;
   /** Sync the internal controllers ref without broadcasting (for request-sync responses). */
   syncControllersRef: (controllers: string[]) => void;
@@ -141,14 +144,15 @@ export interface UseWhiteboardSyncReturn {
 export function useWhiteboardSync(
   hostIdentity: string | undefined,
   isHost: boolean,
-  hostWhiteboardOpenRef?: React.RefObject<boolean>
+  hostWhiteboardOpenRef?: React.RefObject<boolean>,
+  hostAnnotationActiveRef?: React.RefObject<boolean>
 ): UseWhiteboardSyncReturn {
   const { localParticipant } = useLocalParticipant();
 
   // ── Refs ───────────────────────────────────────────────────────────────────
 
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPI | null>(null);
-  const isRemoteUpdateRef = useRef(false);
+  const lastSyncedVersionRef = useRef<number>(0);
   const lastLocalSceneRef = useRef<{
     full: WhiteboardSceneData;
     update: WhiteboardElementsUpdate;
@@ -190,6 +194,7 @@ export function useWhiteboardSync(
   // ── Host-controlled reactive state ────────────────────────────────────────
 
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
+  const [annotationActive, setAnnotationActive] = useState(false);
   const [controllers, setControllers] = useState<ReadonlySet<string>>(new Set());
 
   // Ref mirror so message handler always reads latest without stale closures.
@@ -200,26 +205,6 @@ export function useWhiteboardSync(
 
   // ── Apply helpers ─────────────────────────────────────────────────────────
 
-  /**
-   * Apply the guard-and-clear pattern used by both applyRemoteUpdate and applyFullSync.
-   * We cancel any pending clear-timer and start a fresh macrotask to clear the flag.
-   * This ensures isRemoteUpdateRef stays true for the entire synchronous update
-   * but gets cleared promptly afterwards — even if multiple updates arrive in rapid
-   * succession.
-   *
-   * IMPORTANT: we do NOT cancel a previous clear-timer here anymore. Cancelling
-   * the timer would leave isRemoteUpdateRef permanently true (the host's own
-   * onChange would never fire handleLocalChange again). Instead we let each
-   * macrotask clear the flag independently — the last one wins, which is correct
-   * because the flag is boolean (idempotent to set false).
-   */
-  const setRemoteGuardAndScheduleClear = useCallback(() => {
-    isRemoteUpdateRef.current = true;
-    setTimeout(() => {
-      isRemoteUpdateRef.current = false;
-    }, 0);
-  }, []);
-
   const applyRemoteUpdate = useCallback((update: WhiteboardElementsUpdate) => {
     const api = excalidrawApiRef.current;
     if (!api) {
@@ -227,7 +212,7 @@ export function useWhiteboardSync(
       pendingUpdatesRef.current.push(update);
       return;
     }
-    setRemoteGuardAndScheduleClear();
+    lastSyncedVersionRef.current = getSceneVersion(update.elements);
     api.updateScene({ elements: update.elements, captureUpdate: "NEVER" });
     if (update.files) {
       const vals = Object.values(update.files);
@@ -235,7 +220,7 @@ export function useWhiteboardSync(
         try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
       }
     }
-  }, [setRemoteGuardAndScheduleClear]);
+  }, []);
 
   const applyFullSync = useCallback((scene: WhiteboardSceneData) => {
     const api = excalidrawApiRef.current;
@@ -245,7 +230,7 @@ export function useWhiteboardSync(
       pendingUpdatesRef.current = [];
       return;
     }
-    setRemoteGuardAndScheduleClear();
+    lastSyncedVersionRef.current = getSceneVersion(scene.elements);
     const currentAppState = api.getAppState();
     api.updateScene({
       elements: scene.elements,
@@ -261,7 +246,7 @@ export function useWhiteboardSync(
         try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
       }
     }
-  }, [setRemoteGuardAndScheduleClear]);
+  }, []);
 
   /**
    * Flush pending updates that arrived before the Excalidraw API was ready.
@@ -285,7 +270,7 @@ export function useWhiteboardSync(
       if (pendingFull) {
         pendingFullSyncRef.current = null;
         pendingUpdatesRef.current = [];
-        setRemoteGuardAndScheduleClear();
+        lastSyncedVersionRef.current = getSceneVersion(pendingFull.elements);
         const currentAppState = api.getAppState();
         api.updateScene({
           elements: pendingFull.elements,
@@ -309,7 +294,7 @@ export function useWhiteboardSync(
       if (pending.length === 0) return;
       const latest = pending[pending.length - 1];
       pendingUpdatesRef.current = [];
-      setRemoteGuardAndScheduleClear();
+      lastSyncedVersionRef.current = getSceneVersion(latest.elements);
       api.updateScene({ elements: latest.elements, captureUpdate: "NEVER" });
       if (latest.files) {
         const vals = Object.values(latest.files);
@@ -319,8 +304,6 @@ export function useWhiteboardSync(
       }
     }, 150);
     return () => clearInterval(interval);
-  // setRemoteGuardAndScheduleClear is stable (no deps), safe to omit.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Message handler (stored in ref to avoid re-subscribing on every render) ─
@@ -329,8 +312,8 @@ export function useWhiteboardSync(
     ((msg: ReceivedDataMessage<typeof WHITEBOARD_TOPIC>) => void) | null
   >(null);
 
-  onMessageRef.current = useCallback(
-    (msg: ReceivedDataMessage<typeof WHITEBOARD_TOPIC>) => {
+  useLayoutEffect(() => {
+    onMessageRef.current = (msg: ReceivedDataMessage<typeof WHITEBOARD_TOPIC>) => {
       const message = deserializeMessage(msg.payload);
       if (!message) return;
 
@@ -359,6 +342,9 @@ export function useWhiteboardSync(
           // Restore host-controlled state embedded in the full-sync.
           if (message.whiteboardOpen !== undefined) {
             setWhiteboardOpen(message.whiteboardOpen);
+          }
+          if (message.annotationActive !== undefined) {
+            setAnnotationActive(message.annotationActive);
           }
           if (message.controllers !== undefined) {
             const newSet = new Set(message.controllers);
@@ -400,6 +386,9 @@ export function useWhiteboardSync(
               whiteboardOpen: isHostRef.current
                 ? (hostWhiteboardOpenRef?.current ?? false)
                 : undefined,
+              annotationActive: isHostRef.current
+                ? (hostAnnotationActiveRef?.current ?? false)
+                : undefined,
               controllers: Array.from(controllersRef.current),
             };
             sendRef.current(serializeMessage(response), {
@@ -418,6 +407,13 @@ export function useWhiteboardSync(
           break;
         }
 
+        case "annotation-active": {
+          // Security: only accept from the designated host.
+          if (senderIdentity !== hostIdentityRef.current) return;
+          setAnnotationActive(message.active);
+          break;
+        }
+
         case "whiteboard-permissions": {
           // Security: only accept from the designated host.
           if (senderIdentity !== hostIdentityRef.current) return;
@@ -427,9 +423,8 @@ export function useWhiteboardSync(
           break;
         }
       }
-    },
-    [applyRemoteUpdate, applyFullSync]
-  );
+    };
+  }, [applyRemoteUpdate, applyFullSync]);
 
   const stableOnMessage = useCallback(
     (msg: ReceivedDataMessage<typeof WHITEBOARD_TOPIC>) => {
@@ -442,13 +437,7 @@ export function useWhiteboardSync(
 
   const { send } = useDataChannel(WHITEBOARD_TOPIC, stableOnMessage);
 
-  // Keep sendRef in sync with the `send` function from useDataChannel.
-  // Assigning synchronously during render (in addition to the useEffect) means
-  // handleLocalChange and broadcast helpers never see a stale null ref on the
-  // very first render — important for the 800 ms mount-time request-sync and
-  // for any host broadcast triggered before the first effect flush.
-  sendRef.current = send;
-  useEffect(() => {
+  useLayoutEffect(() => {
     sendRef.current = send;
   }, [send]);
 
@@ -476,6 +465,11 @@ export function useWhiteboardSync(
   const handleLocalChange = useCallback((scene: WhiteboardScene) => {
     const identity = localIdentityRef.current;
     if (!identity) return;
+
+    const currentVersion = getSceneVersion(scene.elements);
+    if (currentVersion === lastSyncedVersionRef.current) return;
+    lastSyncedVersionRef.current = currentVersion;
+
     const update = sceneToUpdate(scene);
     const fullData = sceneToFullData(scene);
     lastLocalSceneRef.current = { full: fullData, update };
@@ -504,6 +498,20 @@ export function useWhiteboardSync(
     const message: WhiteboardMessage = {
       type: "whiteboard-visibility",
       open,
+      sender: identity,
+    };
+    sendRef.current(serializeMessage(message), {
+      reliable: true,
+      topic: WHITEBOARD_TOPIC,
+    }).catch(() => { /* best-effort */ });
+  }, []);
+
+  const broadcastAnnotationState = useCallback((active: boolean) => {
+    const identity = localIdentityRef.current;
+    if (!identity || !sendRef.current) return;
+    const message: WhiteboardMessage = {
+      type: "annotation-active",
+      active,
       sender: identity,
     };
     sendRef.current(serializeMessage(message), {
@@ -569,11 +577,12 @@ export function useWhiteboardSync(
 
   return {
     handleLocalChange,
-    isRemoteUpdateRef,
     excalidrawApiRef,
     whiteboardOpen,
+    annotationActive,
     controllers,
     broadcastVisibility,
+    broadcastAnnotationState,
     broadcastPermissions,
     syncControllersRef,
     requestResync,

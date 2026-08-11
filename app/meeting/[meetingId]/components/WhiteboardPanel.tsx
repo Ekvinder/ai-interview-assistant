@@ -40,7 +40,6 @@ export default function WhiteboardPanel({
   annotationMode = false,
   controllers,
   excalidrawApiRef,
-  isRemoteUpdateRef,
   onLocalChange,
 }: WhiteboardPanelProps) {
   // readOnly is computed from the full host-controlled permission model:
@@ -78,7 +77,6 @@ export default function WhiteboardPanel({
             localIdentity={localIdentity}
             annotationMode
             excalidrawApiRef={excalidrawApiRef}
-            isRemoteUpdateRef={isRemoteUpdateRef}
             onLocalChange={onLocalChange}
           />
         </div>
@@ -196,7 +194,6 @@ export default function WhiteboardPanel({
           localIdentity={localIdentity}
           annotationMode={false}
           excalidrawApiRef={excalidrawApiRef}
-          isRemoteUpdateRef={isRemoteUpdateRef}
           onLocalChange={onLocalChange}
         />
       </div>

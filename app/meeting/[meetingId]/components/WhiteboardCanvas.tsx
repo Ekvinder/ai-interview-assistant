@@ -28,7 +28,10 @@ const Excalidraw = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="h-full w-full flex items-center justify-center bg-[#1e1e2e]">
+      <div 
+        className="h-full w-full flex items-center justify-center"
+        style={{ backgroundColor: "transparent" }}
+      >
         <div className="flex flex-col items-center gap-3 text-white/40">
           <svg className="w-8 h-8 animate-spin" viewBox="0 0 24 24" fill="none">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -46,7 +49,6 @@ export default function WhiteboardCanvas({
   localIdentity: _localIdentity,
   annotationMode = false,
   excalidrawApiRef,
-  isRemoteUpdateRef,
   onLocalChange,
 }: WhiteboardCanvasProps) {
   // When annotationMode changes (e.g. screen-share starts/stops), push the
@@ -55,17 +57,12 @@ export default function WhiteboardCanvas({
   useEffect(() => {
     const api = excalidrawApiRef.current;
     if (!api) return;
-    // Mark as remote so onChange doesn't republish this background-color change.
-    isRemoteUpdateRef.current = true;
     api.updateScene({
       appState: {
         viewBackgroundColor: annotationMode ? "transparent" : "#1e1e2e",
       } as Parameters<typeof api.updateScene>[0]["appState"],
       captureUpdate: "NEVER",
     });
-    // Clear with a macrotask so it outlives any synchronous onChange Excalidraw
-    // fires in response to updateScene.
-    setTimeout(() => { isRemoteUpdateRef.current = false; }, 0);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [annotationMode]);
 
@@ -94,7 +91,6 @@ export default function WhiteboardCanvas({
         }
         onChange={(elements, appState, files) => {
           if (appState.isLoading) return;
-          if (isRemoteUpdateRef.current) return;
           if (readOnly) return;
           onLocalChange({ elements, appState, files });
         }}

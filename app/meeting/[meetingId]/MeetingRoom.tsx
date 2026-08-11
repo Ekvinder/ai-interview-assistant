@@ -647,28 +647,37 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   // Ref that stays current with hostWhiteboardOpen — passed to useWhiteboardSync
   // so it can include the value in full-sync responses to late joiners.
   const hostWhiteboardOpenRef = useRef(false);
+  const hostAnnotationActiveRef = useRef(false);
 
   const {
     handleLocalChange: whiteboardHandleLocalChange,
-    isRemoteUpdateRef: whiteboardIsRemoteUpdateRef,
     excalidrawApiRef: whiteboardExcalidrawApiRef,
     whiteboardOpen: whiteboardOpenFromSync,
+    annotationActive: annotationActiveFromSync,
     controllers: whiteboardControllers,
     broadcastVisibility: whiteboardBroadcastVisibility,
+    broadcastAnnotationState,
     broadcastPermissions: whiteboardBroadcastPermissions,
     syncControllersRef: whiteboardSyncControllersRef,
     requestResync: whiteboardRequestResync,
-  } = useWhiteboardSync(hostUserId, isHost, hostWhiteboardOpenRef);
+  } = useWhiteboardSync(hostUserId, isHost, hostWhiteboardOpenRef, hostAnnotationActiveRef);
 
   // Host manages whiteboardOpen locally and broadcasts it.
   // Participants use whiteboardOpenFromSync (received from host via DataChannel).
   const [hostWhiteboardOpen, setHostWhiteboardOpen] = useState(false);
   const whiteboardOpen = isHost ? hostWhiteboardOpen : whiteboardOpenFromSync;
 
+  const [hostAnnotationActive, setHostAnnotationActive] = useState(false);
+  const annotationActive = isHost ? hostAnnotationActive : annotationActiveFromSync;
+
   // Keep the ref current so late-joiner full-sync responses include the right state.
   useEffect(() => {
     hostWhiteboardOpenRef.current = hostWhiteboardOpen;
   }, [hostWhiteboardOpen]);
+
+  useEffect(() => {
+    hostAnnotationActiveRef.current = hostAnnotationActive;
+  }, [hostAnnotationActive]);
 
   // Host manages the controllers set locally and broadcasts it.
   // Participants use whiteboardControllers (received from host via DataChannel).
@@ -715,12 +724,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     const prev = prevWhiteboardOpenRef.current;
     prevWhiteboardOpenRef.current = whiteboardOpen;
     if (whiteboardOpen && !prev) {
-      // Only open the sidebar panel when no screen-share is active.
-      // During screen-share, strokes arrive via DataChannel and the annotation
-      // overlay on the sharer's side handles the visual display.
-      if (!screenShareActiveRef2.current) {
-        setShowPanel('whiteboard');
-      }
+      setShowPanel('whiteboard');
       setTimeout(() => whiteboardRequestResync(), 200);
     } else if (!whiteboardOpen && prev && showPanel === 'whiteboard') {
       setShowPanel(null);
@@ -745,15 +749,27 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
 
   // ── Annotation mode ────────────────────────────────────────────────────────
-  // showAnnotation controls whether the WhiteboardPanel is rendered as a
-  // transparent overlay over the screen-share area (annotation mode) or as the
-  // normal right-sidebar (panel mode).
-  //
-  // Auto-activates when a screen share starts; auto-deactivates when it ends.
-  // Users can also manually hide/show the overlay via the whiteboard button.
+  // Users can manually hide/show the overlay via the host control.
   // The WhiteboardCanvas instance stays mounted in both states — scene and
   // collaboration state are never lost during the transition.
-  const [showAnnotation, setShowAnnotation] = useState(false);
+  const handleToggleAnnotation = useCallback(() => {
+    if (!isHost) return;
+    setHostAnnotationActive((prev) => {
+      const next = !prev;
+      broadcastAnnotationState(next);
+      return next;
+    });
+  }, [isHost, broadcastAnnotationState]);
+
+  const hostAnnotationMountedRef = useRef(false);
+  useEffect(() => {
+    if (!isHost) return;
+    if (!hostAnnotationMountedRef.current) {
+      hostAnnotationMountedRef.current = true;
+      return; 
+    }
+    broadcastAnnotationState(hostAnnotationActive);
+  }, [isHost, hostAnnotationActive, broadcastAnnotationState]);
 
   // ── Host controls ─────────────────────────────────────────────────────────
   const [isLocked,         setIsLocked]         = useState(false); // meeting lock placeholder
@@ -938,29 +954,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   }, [screenShareActive]);
 
   // ── Annotation mode auto-detect ────────────────────────────────────────────
-  // The annotation overlay is only activated for the LOCAL sharer.
-  // Other participants see strokes via their whiteboard sidebar which is already
-  // synced by the DataChannel.  Turning the overlay on for non-sharers covered
-  // their screen-share video with the Excalidraw canvas background.
-  const screenShareActiveRef = useRef(false);
-  useEffect(() => {
-    const wasActive = screenShareActiveRef.current;
-    screenShareActiveRef.current = screenShareActive;
-
-    if (screenShareActive && !wasActive) {
-      // Only the local sharer gets the transparent annotation overlay.
-      setShowAnnotation(true);
-      // Close the normal whiteboard sidebar if open — the annotation overlay
-      // takes over for the sharer; participants receive strokes via DataChannel sync.
-      setShowPanel((p) => (p === 'whiteboard' ? null : p));
-    }
-
-    if (!screenShareActive && wasActive) {
-      setShowAnnotation(false);
-    }
-  // screenShareActiveRef is a stable ref, intentionally excluded.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screenShareActive, localIsSharing]);
+  // Removed: Annotation is now manually controlled by the host and fully decoupled from screen share state.
 
   if (connState === ConnectionState.Connecting) {
     return (
@@ -1048,21 +1042,20 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
                 <div
                   className="absolute inset-0"
                   style={{
-                    pointerEvents: showAnnotation ? 'auto' : 'none',
-                    opacity: showAnnotation ? 1 : 0,
+                    pointerEvents: annotationActive ? 'auto' : 'none',
+                    opacity: annotationActive ? 1 : 0,
                   }}
                 >
                   <WhiteboardPanel
                     meetingId={meeting.meetingId}
                     isHost={isHost}
                     whiteboardLocked={whiteboardLocked}
-                    localIdentity={localParticipant?.identity ?? ''}
+                    localIdentity={localParticipant?.identity ?? undefined}
                     onToggleLock={toggleWhiteboardLock}
                     annotationMode
-                    onClose={() => setShowAnnotation(false)}
+                    onClose={handleToggleAnnotation}
                     controllers={controllers}
                     excalidrawApiRef={whiteboardExcalidrawApiRef}
-                    isRemoteUpdateRef={whiteboardIsRemoteUpdateRef}
                     onLocalChange={whiteboardHandleLocalChange}
                   />
                 </div>
@@ -1136,11 +1129,10 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             meetingId={meeting.meetingId}
             isHost={isHost}
             whiteboardLocked={whiteboardLocked}
-            localIdentity={localParticipant?.identity ?? ''}
+            localIdentity={localParticipant?.identity ?? undefined}
             onToggleLock={toggleWhiteboardLock}
             controllers={controllers}
             excalidrawApiRef={whiteboardExcalidrawApiRef}
-            isRemoteUpdateRef={whiteboardIsRemoteUpdateRef}
             onLocalChange={whiteboardHandleLocalChange}
             onClose={() => {
               setShowPanel(null);
@@ -1206,23 +1198,18 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             activeLabel="Stop share" inactiveLabel="Share screen"
             onToggle={handleScreenShare} disabled={screenPending} />
         )}
-        
-        {/* Whiteboard / Annotate button.
-            During screen share: toggles the transparent annotation overlay.
-            Normal mode: toggles the whiteboard sidebar panel. */}
-
-
-        {screenShareActive ? (
+        {screenShareActive && isHost && (
           <ControlButton
-            active={showAnnotation}
+            active={annotationActive}
             activeIcon={<PenTool className="w-5 h-5" />}
             inactiveIcon={<PenTool className="w-5 h-5" />}
-            activeLabel="Hide annotations"
+            activeLabel="Stop Annotating"
             inactiveLabel="Annotate"
-            onToggle={() => setShowAnnotation((v) => !v)}
-            highlight={showAnnotation}
+            onToggle={handleToggleAnnotation}
+            highlight={annotationActive}
           />
-        ) : isHost ? (
+        )}
+        {isHost ? (
           /* Host: whiteboard button opens for EVERYONE */
           <ControlButton active={whiteboardOpen}
             activeIcon={<PenTool className="w-5 h-5" />}
