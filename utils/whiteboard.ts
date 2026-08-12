@@ -39,6 +39,11 @@ export function getReadOnlyState(
  * We use this to decide if an Excalidraw onChange event actually modified the
  * scene content or if it was just a remote update being applied (or a non-element change).
  */
-export function getSceneVersion(elements: readonly { version?: number }[]): number {
-  return elements.reduce((acc, el) => acc + (el.version || 0), 0) + elements.length;
+export function getSceneVersion(elements: readonly { version?: number; versionNonce?: number }[]): number {
+  return (
+    elements.reduce(
+      (acc, el) => acc + (el.version || 0) + (el.versionNonce || 0),
+      0
+    ) + elements.length
+  );
 }

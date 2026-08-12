@@ -66,9 +66,9 @@
 
 import { useCallback, useEffect, useRef, useState, useLayoutEffect } from "react";
 import type React from "react";
-import { useDataChannel, useLocalParticipant } from "@livekit/components-react";
+import { useDataChannel, useRoomContext } from "@livekit/components-react";
 import type { ReceivedDataMessage } from "@livekit/components-core";
-import type { DataPublishOptions } from "livekit-client";
+import { ConnectionState, type DataPublishOptions } from "livekit-client";
 import type {
   ExcalidrawImperativeAPI,
   WhiteboardMessage,
@@ -144,11 +144,10 @@ export interface UseWhiteboardSyncReturn {
 export function useWhiteboardSync(
   hostIdentity: string | undefined,
   isHost: boolean,
+  syncTarget: "whiteboard" | "annotation",
   hostWhiteboardOpenRef?: React.RefObject<boolean>,
   hostAnnotationActiveRef?: React.RefObject<boolean>
 ): UseWhiteboardSyncReturn {
-  const { localParticipant } = useLocalParticipant();
-
   // ── Refs ───────────────────────────────────────────────────────────────────
 
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPI | null>(null);
@@ -158,6 +157,7 @@ export function useWhiteboardSync(
     update: WhiteboardElementsUpdate;
   } | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSendTimeRef = useRef<number>(0);
   // sendRef is intentionally typed as a mutable ref that starts null and is
   // populated synchronously on the first render from useDataChannel's send.
   // Using a ref rather than a state value avoids triggering re-renders when
@@ -174,13 +174,6 @@ export function useWhiteboardSync(
   const pendingUpdatesRef = useRef<WhiteboardElementsUpdate[]>([]);
   const pendingFullSyncRef = useRef<WhiteboardSceneData | null>(null);
 
-  const localIdentityRef = useRef<string | undefined>(localParticipant?.identity);
-  useEffect(() => {
-    localIdentityRef.current = localParticipant?.identity;
-  }, [localParticipant?.identity]);
-
-  // Initialise synchronously from the prop so the ref is populated before the
-  // first DataChannel message could ever arrive.
   const hostIdentityRef = useRef<string | undefined>(hostIdentity);
   useEffect(() => {
     hostIdentityRef.current = hostIdentity;
@@ -190,6 +183,8 @@ export function useWhiteboardSync(
   useEffect(() => {
     isHostRef.current = isHost;
   }, [isHost]);
+
+  const room = useRoomContext();
 
   // ── Host-controlled reactive state ────────────────────────────────────────
 
@@ -202,6 +197,11 @@ export function useWhiteboardSync(
   useEffect(() => {
     controllersRef.current = controllers;
   }, [controllers]);
+
+  const annotationActiveRef = useRef<boolean>(false);
+  useEffect(() => {
+    annotationActiveRef.current = annotationActive;
+  }, [annotationActive]);
 
   // ── Apply helpers ─────────────────────────────────────────────────────────
 
@@ -306,6 +306,22 @@ export function useWhiteboardSync(
     return () => clearInterval(interval);
   }, []);
 
+  const requestResync = useCallback(() => {
+    const identity = room.localParticipant.identity;
+    if (!identity || !sendRef.current) return;
+
+    const request: WhiteboardMessage = {
+      type: "request-sync",
+      target: syncTarget,
+      sender: identity,
+    };
+    const opts: DataPublishOptions = hostIdentityRef.current
+      ? { reliable: true, destinationIdentities: [hostIdentityRef.current] }
+      : { reliable: true };
+
+    sendRef.current(serializeMessage(request), opts).catch(() => { /* best-effort */ });
+  }, [syncTarget]);
+
   // ── Message handler (stored in ref to avoid re-subscribing on every render) ─
 
   const onMessageRef = useRef<
@@ -318,28 +334,39 @@ export function useWhiteboardSync(
       if (!message) return;
 
       const senderIdentity = msg.from?.identity || message.sender;
-      const localIdentity = localIdentityRef.current;
+      const localIdentity = room.localParticipant.identity;
 
       // Never process our own echo.
       if (senderIdentity && senderIdentity === localIdentity) return;
 
+      // Ignore scene-related messages not meant for this hook instance
+      if (
+        (message.type === "scene-update" ||
+          message.type === "full-sync" ||
+          message.type === "request-sync") &&
+        message.target !== syncTarget
+      ) {
+        return;
+      }
+
       switch (message.type) {
         case "scene-update": {
+          // console.log("[WB CHANNEL RECEIVE]", { topic: WHITEBOARD_TOPIC, type: message.type, sender: senderIdentity, target: message.target });
           const isFromHost = senderIdentity === hostIdentityRef.current;
-          const isFromController =
-            senderIdentity != null && controllersRef.current.has(senderIdentity);
-          if (!isFromHost && !isFromController) return; // unauthorised sender
+          const isFromController = senderIdentity != null && controllersRef.current.has(senderIdentity);
+          if (!isFromHost && !isFromController) return;
+
           applyRemoteUpdate(message.update);
           break;
         }
 
         case "full-sync": {
+          // console.log("[WB CHANNEL RECEIVE]", { topic: WHITEBOARD_TOPIC, type: message.type, sender: senderIdentity, target: message.target });
           applyFullSync(message.scene);
           lastLocalSceneRef.current = {
             full: message.scene,
             update: { elements: message.scene.elements, files: message.scene.files },
           };
-          // Restore host-controlled state embedded in the full-sync.
           if (message.whiteboardOpen !== undefined) {
             setWhiteboardOpen(message.whiteboardOpen);
           }
@@ -355,45 +382,27 @@ export function useWhiteboardSync(
         }
 
         case "request-sync": {
-          // Respond with the full current scene to anyone who asks, as long as
-          // we have a scene to share OR we are the host (who always has
-          // authoritative state, even with a blank canvas).
-          //
-          // There is deliberately no per-requester deduplication here.
-          // The old `respondedToRef` guard was broken: the participant called
-          // `requestResync()` which deleted the identity from the *local* node's
-          // set, not from the *host's* — so the host's guard was never cleared
-          // and subsequent re-sync requests were permanently silenced.
-          //
-          // Storm prevention (many participants joining at once) is handled by
-          // the random jitter below — responses are naturally spread over up to
-          // SYNC_RESPONSE_JITTER_MS milliseconds, and the participant always
-          // applies only the last full-sync it receives (pendingFullSyncRef is
-          // overwritten on each arrival, not appended).
+          // console.log("[WB CHANNEL RECEIVE]", { topic: WHITEBOARD_TOPIC, type: message.type, sender: senderIdentity, target: message.target });
           if (!lastLocalSceneRef.current && !isHostRef.current) break;
 
           const requester = message.sender;
           const jitter = Math.random() * SYNC_RESPONSE_JITTER_MS;
           setTimeout(() => {
-            const identity = localIdentityRef.current;
+            const identity = room.localParticipant.identity;
             if (!identity || !sendRef.current) return;
 
             const scene = lastLocalSceneRef.current?.full ?? EMPTY_SCENE;
             const response: WhiteboardMessage = {
               type: "full-sync",
+              target: syncTarget,
               scene,
               sender: identity,
-              whiteboardOpen: isHostRef.current
-                ? (hostWhiteboardOpenRef?.current ?? false)
-                : undefined,
-              annotationActive: isHostRef.current
-                ? (hostAnnotationActiveRef?.current ?? false)
-                : undefined,
+              whiteboardOpen: isHostRef.current ? (hostWhiteboardOpenRef?.current ?? false) : undefined,
+              annotationActive: isHostRef.current ? (hostAnnotationActiveRef?.current ?? false) : undefined,
               controllers: Array.from(controllersRef.current),
             };
             sendRef.current(serializeMessage(response), {
               reliable: true,
-              topic: WHITEBOARD_TOPIC,
               destinationIdentities: [requester],
             }).catch(() => { /* best-effort */ });
           }, jitter);
@@ -401,30 +410,35 @@ export function useWhiteboardSync(
         }
 
         case "whiteboard-visibility": {
-          // Security: only accept from the designated host.
           if (senderIdentity !== hostIdentityRef.current) return;
           setWhiteboardOpen(message.open);
           break;
         }
 
         case "annotation-active": {
-          // Security: only accept from the designated host.
           if (senderIdentity !== hostIdentityRef.current) return;
           setAnnotationActive(message.active);
+          if (message.active) {
+            setTimeout(() => requestResync(), 100);
+          }
           break;
         }
 
         case "whiteboard-permissions": {
-          // Security: only accept from the designated host.
+          // console.log("[WB CHANNEL RECEIVE]", { topic: WHITEBOARD_TOPIC, type: message.type, sender: senderIdentity });
+          // console.log("[WB PERMISSION TOPIC RECEIVE]", { topic: WHITEBOARD_TOPIC });
+          // console.log("[WB PERMISSION PAYLOAD AFTER DECODE]", message);
+          // console.log("[WB PERMISSION RECEIVE]", { controllers: message.controllers, sender: senderIdentity, localIdentity: room.localParticipant.identity });
           if (senderIdentity !== hostIdentityRef.current) return;
           const newSet = new Set(message.controllers);
           setControllers(newSet);
           controllersRef.current = newSet;
+          // console.log("[WB PERMISSION STATE UPDATE]", { controllers: message.controllers, localIdentity: room.localParticipant.identity });
           break;
         }
       }
     };
-  }, [applyRemoteUpdate, applyFullSync]);
+  }, [applyRemoteUpdate, applyFullSync, requestResync]);
 
   const stableOnMessage = useCallback(
     (msg: ReceivedDataMessage<typeof WHITEBOARD_TOPIC>) => {
@@ -433,13 +447,25 @@ export function useWhiteboardSync(
     []
   );
 
-  // ── DataChannel ───────────────────────────────────────────────────────────
-
-  const { send } = useDataChannel(WHITEBOARD_TOPIC, stableOnMessage);
+  useDataChannel(WHITEBOARD_TOPIC, stableOnMessage);
 
   useLayoutEffect(() => {
-    sendRef.current = send;
-  }, [send]);
+    sendRef.current = async (payload: Uint8Array, options: DataPublishOptions) => {
+      if (room.state !== ConnectionState.Connected) {
+        // console.warn("[WB SEND ABORT] Room not connected:", room.state);
+        return;
+      }
+      try {
+        // Cast payload to satisfy LiveKit's generic Uint8Array<ArrayBuffer> requirement
+        await room.localParticipant.publishData(payload as unknown as Uint8Array<ArrayBuffer>, {
+          ...options,
+          topic: WHITEBOARD_TOPIC,
+        });
+      } catch (err) {
+        // console.error("[WB SEND ERROR] publishData failed:", err);
+      }
+    };
+  }, [room]);
 
   // ── Initial request-sync on mount ─────────────────────────────────────────
   // Sends a broadcast request-sync so the host (or any existing participant)
@@ -448,9 +474,9 @@ export function useWhiteboardSync(
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      const identity = localIdentityRef.current;
+      const identity = room.localParticipant.identity;
       if (!identity || !sendRef.current) return;
-      const request: WhiteboardMessage = { type: "request-sync", sender: identity };
+      const request: WhiteboardMessage = { type: "request-sync", target: syncTarget, sender: identity };
       sendRef.current(serializeMessage(request), {
         reliable: true,
         topic: WHITEBOARD_TOPIC,
@@ -463,7 +489,7 @@ export function useWhiteboardSync(
   // ── Local change handler ──────────────────────────────────────────────────
 
   const handleLocalChange = useCallback((scene: WhiteboardScene) => {
-    const identity = localIdentityRef.current;
+    const identity = room.localParticipant.identity;
     if (!identity) return;
 
     const currentVersion = getSceneVersion(scene.elements);
@@ -473,27 +499,56 @@ export function useWhiteboardSync(
     const update = sceneToUpdate(scene);
     const fullData = sceneToFullData(scene);
     lastLocalSceneRef.current = { full: fullData, update };
-    if (debounceTimerRef.current !== null) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => {
-      debounceTimerRef.current = null;
-      if (!sendRef.current) return;
-      const message: WhiteboardMessage = {
-        type: "scene-update",
-        update,
-        sender: identity,
-        timestamp: Date.now(),
-      };
+
+    // console.log("[WB LOCAL CHANGE]", { identity, version: currentVersion, elementsCount: scene.elements.length });
+    if (annotationActiveRef.current) {
+      // console.log("[ANNOTATION LOCAL CHANGE]", { identity, version: currentVersion, elementsCount: scene.elements.length });
+    }
+
+    const performSend = () => {
+      lastSendTimeRef.current = Date.now();
+      if (!sendRef.current || !lastLocalSceneRef.current) return;
+        const message: WhiteboardMessage = {
+          type: "scene-update",
+          target: syncTarget,
+          update: lastLocalSceneRef.current.update,
+          sender: identity,
+          timestamp: Date.now(),
+        };
+      // console.log("[WB SEND]", { type: message.type, sender: identity });
+      // console.log("[WB CHANNEL SEND]", { topic: WHITEBOARD_TOPIC, type: message.type });
+      // console.log("[WB SEND PAYLOAD]", { type: message.type, elementCount: message.update.elements.length, sender: identity });
+      if (annotationActiveRef.current) {
+        // console.log("[ANNOTATION SEND]", { type: message.type, sender: identity, elementCount: message.update.elements.length });
+      }
       sendRef.current(serializeMessage(message), {
         reliable: true,
         topic: WHITEBOARD_TOPIC,
       }).catch(() => { /* best-effort */ });
-    }, DEBOUNCE_MS);
+    };
+
+    const now = Date.now();
+    const timeSinceLastSend = now - lastSendTimeRef.current;
+
+    // Send immediately if throttle window (60ms) has passed, otherwise schedule trailing edge
+    if (timeSinceLastSend >= 60) {
+      if (debounceTimerRef.current !== null) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      performSend();
+    } else if (debounceTimerRef.current === null) {
+      debounceTimerRef.current = setTimeout(() => {
+        debounceTimerRef.current = null;
+        performSend();
+      }, 60 - timeSinceLastSend);
+    }
   }, []);
 
   // ── Host broadcast helpers ────────────────────────────────────────────────
 
   const broadcastVisibility = useCallback((open: boolean) => {
-    const identity = localIdentityRef.current;
+    const identity = room.localParticipant.identity;
     if (!identity || !sendRef.current) return;
     const message: WhiteboardMessage = {
       type: "whiteboard-visibility",
@@ -507,7 +562,7 @@ export function useWhiteboardSync(
   }, []);
 
   const broadcastAnnotationState = useCallback((active: boolean) => {
-    const identity = localIdentityRef.current;
+    const identity = room.localParticipant.identity;
     if (!identity || !sendRef.current) return;
     const message: WhiteboardMessage = {
       type: "annotation-active",
@@ -521,17 +576,36 @@ export function useWhiteboardSync(
   }, []);
 
   const broadcastPermissions = useCallback((controllerList: string[]) => {
-    const identity = localIdentityRef.current;
-    if (!identity || !sendRef.current) return;
+    // console.log("[WB PERMISSION BROADCAST ENTER]", { controllers: controllerList });
+    const identity = room.localParticipant.identity;
+    if (!identity) {
+      // console.log("[WB PERMISSION SEND ERROR]", { error: "No local identity available" });
+      return;
+    }
+    if (!sendRef.current) {
+      // console.log("[WB PERMISSION SEND ERROR]", { error: "sendRef.current is not available" });
+      return;
+    }
+
     const message: WhiteboardMessage = {
       type: "whiteboard-permissions",
       controllers: controllerList,
       sender: identity,
     };
+    
+    // console.log("[WB PERMISSION PAYLOAD BEFORE ENCODE]", message);
+    // console.log("[WB PERMISSION SEND ATTEMPT]", { topic: WHITEBOARD_TOPIC, payloadType: message.type, controllers: controllerList });
+    // console.log("[WB CHANNEL SEND]", { topic: WHITEBOARD_TOPIC, reliable: true, payloadType: message.type });
+    // console.log("[WB PERMISSION SEND]", { controllers: controllerList, sender: identity });
+
     sendRef.current(serializeMessage(message), {
       reliable: true,
       topic: WHITEBOARD_TOPIC,
-    }).catch(() => { /* best-effort */ });
+    }).then(() => {
+      console.log("[WB PERMISSION SEND SUCCESS]", { topic: WHITEBOARD_TOPIC });
+    }).catch((error) => { 
+      console.log("[WB PERMISSION SEND ERROR]", { error });
+    });
   }, []);
 
   const syncControllersRef = useCallback((controllerList: string[]) => {
@@ -540,32 +614,8 @@ export function useWhiteboardSync(
     controllersRef.current = newSet;
   }, []);
 
-  /**
-   * Re-request the full scene from the host.
-   * Called by RoomContent when the whiteboard panel is newly opened for a
-   * participant so the freshly-mounted Excalidraw gets the latest scene even if
-   * the initial mount-time request-sync was sent long before the panel opened.
-   *
-   * The request is sent directly to the host (when their identity is known) so
-   * the response is guaranteed to carry authoritative state rather than a
-   * potentially stale scene cached by another participant.
-   */
-  const requestResync = useCallback(() => {
-    const identity = localIdentityRef.current;
-    if (!identity || !sendRef.current) return;
 
-    const request: WhiteboardMessage = {
-      type: "request-sync",
-      sender: identity,
-    };
-    // Target the host specifically if we know their identity — guarantees the
-    // authoritative state arrives rather than any participant's cached copy.
-    const opts: DataPublishOptions = hostIdentityRef.current
-      ? { reliable: true, topic: WHITEBOARD_TOPIC, destinationIdentities: [hostIdentityRef.current] }
-      : { reliable: true, topic: WHITEBOARD_TOPIC };
 
-    sendRef.current(serializeMessage(request), opts).catch(() => { /* best-effort */ });
-  }, []);
 
   // ── Cleanup ───────────────────────────────────────────────────────────────
 

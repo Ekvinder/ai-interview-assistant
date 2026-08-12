@@ -80,7 +80,7 @@ export default function WhiteboardCanvas({
     >
       <Excalidraw
         excalidrawAPI={(instance) => {
-          excalidrawApiRef.current = instance;
+           excalidrawApiRef.current = instance;
         }}
         viewModeEnabled={readOnly}
         theme="dark"

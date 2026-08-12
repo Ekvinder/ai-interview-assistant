@@ -42,9 +42,9 @@ export default function WhiteboardPanel({
   excalidrawApiRef,
   onLocalChange,
 }: WhiteboardPanelProps) {
-  // readOnly is computed from the full host-controlled permission model:
-  // host → always false; board-locked → always true; participant in controllers → false; else true.
   const readOnly = getReadOnlyState(isHost, whiteboardLocked, localIdentity, controllers);
+  const hasPermission = localIdentity ? controllers?.has(localIdentity) ?? false : false;
+  
 
   // ── Annotation overlay mode ──────────────────────────────────────────────
   // The panel becomes an absolute inset-0 layer over the screen-share

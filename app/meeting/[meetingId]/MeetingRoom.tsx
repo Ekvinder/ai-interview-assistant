@@ -653,14 +653,20 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     handleLocalChange: whiteboardHandleLocalChange,
     excalidrawApiRef: whiteboardExcalidrawApiRef,
     whiteboardOpen: whiteboardOpenFromSync,
-    annotationActive: annotationActiveFromSync,
     controllers: whiteboardControllers,
     broadcastVisibility: whiteboardBroadcastVisibility,
-    broadcastAnnotationState,
     broadcastPermissions: whiteboardBroadcastPermissions,
     syncControllersRef: whiteboardSyncControllersRef,
     requestResync: whiteboardRequestResync,
-  } = useWhiteboardSync(hostUserId, isHost, hostWhiteboardOpenRef, hostAnnotationActiveRef);
+  } = useWhiteboardSync(hostUserId, isHost, "whiteboard", hostWhiteboardOpenRef, hostAnnotationActiveRef);
+
+  const {
+    handleLocalChange: annotationHandleLocalChange,
+    excalidrawApiRef: annotationExcalidrawApiRef,
+    annotationActive: annotationActiveFromSync,
+    broadcastAnnotationState,
+    requestResync: annotationRequestResync,
+  } = useWhiteboardSync(hostUserId, isHost, "annotation", hostWhiteboardOpenRef, hostAnnotationActiveRef);
 
   // Host manages whiteboardOpen locally and broadcasts it.
   // Participants use whiteboardOpenFromSync (received from host via DataChannel).
@@ -736,15 +742,25 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   // Host: grant drawing permission to a participant.
   const hostGiveWhiteboardControl = useCallback((identity: string) => {
     if (!isHost) return;
-    setHostControllersArray((list) =>
-      list.includes(identity) ? list : [...list, identity]
-    );
+    // console.log("[WB PERMISSION CLICK]", { action: "allow", targetIdentity: identity });
+    // console.log("[WB PERMISSION STATE BEFORE]", { controllers: hostControllersArrayRef.current });
+    setHostControllersArray((list) => {
+      const next = list.includes(identity) ? list : [...list, identity];
+      // console.log("[WB PERMISSION STATE AFTER]", { controllers: next });
+      return next;
+    });
   }, [isHost]);
 
   // Host: revoke drawing permission from a participant.
   const hostRemoveWhiteboardControl = useCallback((identity: string) => {
     if (!isHost) return;
-    setHostControllersArray((list) => list.filter((id) => id !== identity));
+    // console.log("[WB PERMISSION CLICK]", { action: "deny", targetIdentity: identity });
+    // console.log("[WB PERMISSION STATE BEFORE]", { controllers: hostControllersArrayRef.current });
+    setHostControllersArray((list) => {
+      const next = list.filter((id) => id !== identity);
+      // console.log("[WB PERMISSION STATE AFTER]", { controllers: next });
+      return next;
+    });
   }, [isHost]);
 
 
@@ -1050,13 +1066,13 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
                     meetingId={meeting.meetingId}
                     isHost={isHost}
                     whiteboardLocked={whiteboardLocked}
-                    localIdentity={localParticipant?.identity ?? undefined}
+                    localIdentity={localParticipant?.identity || userId}
                     onToggleLock={toggleWhiteboardLock}
                     annotationMode
                     onClose={handleToggleAnnotation}
                     controllers={controllers}
-                    excalidrawApiRef={whiteboardExcalidrawApiRef}
-                    onLocalChange={whiteboardHandleLocalChange}
+                    excalidrawApiRef={annotationExcalidrawApiRef}
+                    onLocalChange={annotationHandleLocalChange}
                   />
                 </div>
               </div>
@@ -1129,7 +1145,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             meetingId={meeting.meetingId}
             isHost={isHost}
             whiteboardLocked={whiteboardLocked}
-            localIdentity={localParticipant?.identity ?? undefined}
+            localIdentity={localParticipant?.identity || userId}
             onToggleLock={toggleWhiteboardLock}
             controllers={controllers}
             excalidrawApiRef={whiteboardExcalidrawApiRef}
@@ -1675,22 +1691,22 @@ function PanelRow({
         <div className="pl-11 flex gap-1.5">
           {hasWhiteboardControl ? (
             <button
-              onClick={() => onRemoveWhiteboardControl?.(identity ?? '')}
+              onClick={() => onRemoveWhiteboardControl?.(participant.identity)}
               className="flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 transition-colors border border-blue-500/20"
               title={`Remove whiteboard control from ${label}`}
               aria-label={`Remove whiteboard control from ${label}`}
-              disabled={!identity}
+              disabled={!participant.identity}
             >
               <PenTool className="w-3 h-3" />
               Remove Drawing
             </button>
           ) : (
             <button
-              onClick={() => onGiveWhiteboardControl?.(identity ?? '')}
+              onClick={() => onGiveWhiteboardControl?.(participant.identity)}
               className="flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded bg-muted text-muted-foreground hover:bg-blue-500/10 hover:text-blue-500 transition-colors border border-border"
               title={`Give whiteboard control to ${label}`}
               aria-label={`Give whiteboard control to ${label}`}
-              disabled={!identity}
+              disabled={!participant.identity}
             >
               <PenTool className="w-3 h-3" />
               Allow Drawing

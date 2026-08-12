@@ -126,12 +126,14 @@ export type WhiteboardMessage =
        * Never carries appState so remote viewports are never disrupted.
        */
       type: "scene-update";
+      target: "whiteboard" | "annotation";
       update: WhiteboardElementsUpdate;
       sender: string;
       timestamp: number;
     }
   | {
       type: "request-sync";
+      target: "whiteboard" | "annotation";
       sender: string;
     }
   | {
@@ -142,6 +144,7 @@ export type WhiteboardMessage =
        * joiners can restore the full host-controlled state without extra round trips.
        */
       type: "full-sync";
+      target: "whiteboard" | "annotation";
       scene: WhiteboardSceneData;
       sender: string;
       /** Whether the whiteboard is currently open for all participants */
