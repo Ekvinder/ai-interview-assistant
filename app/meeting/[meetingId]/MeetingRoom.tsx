@@ -649,6 +649,17 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   const hostWhiteboardOpenRef = useRef(false);
   const hostAnnotationActiveRef = useRef(false);
 
+  // Ref to the current screen-share-stage dimensions, kept live by ScreenShareView
+  // via onStageSize. Passed to the annotation useWhiteboardSync so coordinates can
+  // be normalized on send and denormalized on receive.
+  const annotationStageSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
+  const handleAnnotationStageSize = useCallback(
+    (size: { width: number; height: number }) => {
+      annotationStageSizeRef.current = size;
+    },
+    []
+  );
+
   const {
     handleLocalChange: whiteboardHandleLocalChange,
     excalidrawApiRef: whiteboardExcalidrawApiRef,
@@ -666,7 +677,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     annotationActive: annotationActiveFromSync,
     broadcastAnnotationState,
     requestResync: annotationRequestResync,
-  } = useWhiteboardSync(hostUserId, isHost, "annotation", hostWhiteboardOpenRef, hostAnnotationActiveRef);
+  } = useWhiteboardSync(hostUserId, isHost, "annotation", hostWhiteboardOpenRef, hostAnnotationActiveRef, annotationStageSizeRef);
 
   // Host manages whiteboardOpen locally and broadcasts it.
   // Participants use whiteboardOpenFromSync (received from host via DataChannel).
@@ -1048,33 +1059,35 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
                   }
                   isLocalSharer={localIsSharing && activeScreenShare.participant.identity === localParticipant?.identity}
                   onStopShare={handleScreenShare}
-                />
-                {/* Transparent annotation overlay — always mounted while screen share
-                    is active so WhiteboardCanvas (and useWhiteboardSync) are never
-                    destroyed.  Scene, undo history, and DataChannel state persist
-                    even when the overlay is visually hidden.
-                    The wrapper is absolute inset-0 so it never affects flow layout.
-                    pointer-events:none + opacity:0 hides it without unmounting. */}
-                <div
-                  className="absolute inset-0"
-                  style={{
-                    pointerEvents: annotationActive ? 'auto' : 'none',
-                    opacity: annotationActive ? 1 : 0,
-                  }}
+                  onStageSize={handleAnnotationStageSize}
                 >
-                  <WhiteboardPanel
-                    meetingId={meeting.meetingId}
-                    isHost={isHost}
-                    whiteboardLocked={whiteboardLocked}
-                    localIdentity={localParticipant?.identity || userId}
-                    onToggleLock={toggleWhiteboardLock}
-                    annotationMode
-                    onClose={handleToggleAnnotation}
-                    controllers={controllers}
-                    excalidrawApiRef={annotationExcalidrawApiRef}
-                    onLocalChange={annotationHandleLocalChange}
-                  />
-                </div>
+                  {/* Transparent annotation overlay — always mounted while screen share
+                      is active so WhiteboardCanvas (and useWhiteboardSync) are never
+                      destroyed.  Scene, undo history, and DataChannel state persist
+                      even when the overlay is visually hidden.
+                      The wrapper is absolute inset-0 so it never affects flow layout.
+                      pointer-events:none + opacity:0 hides it without unmounting. */}
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      pointerEvents: annotationActive ? 'auto' : 'none',
+                      opacity: annotationActive ? 1 : 0,
+                    }}
+                  >
+                    <WhiteboardPanel
+                      meetingId={meeting.meetingId}
+                      isHost={isHost}
+                      whiteboardLocked={whiteboardLocked}
+                      localIdentity={localParticipant?.identity || userId}
+                      onToggleLock={toggleWhiteboardLock}
+                      annotationMode
+                      onClose={handleToggleAnnotation}
+                      controllers={controllers}
+                      excalidrawApiRef={annotationExcalidrawApiRef}
+                      onLocalChange={annotationHandleLocalChange}
+                    />
+                  </div>
+                </ScreenShareView>
               </div>
               {/* Thumbnail sidebar */}
               <div className="shrink-0 h-32 md:h-auto md:w-64 lg:w-72 bg-zinc-950 flex md:flex-col gap-2 p-2 md:p-3 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto border-t md:border-t-0 md:border-l border-white/10 transition-all duration-300 ease-in-out">

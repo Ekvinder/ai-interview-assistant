@@ -50,6 +50,20 @@ export default function WhiteboardPanel({
   // The panel becomes an absolute inset-0 layer over the screen-share
   // container.  Only the canvas and a minimal floating toolbar are rendered —
   // the normal sidebar chrome is hidden so it doesn't block the shared screen.
+  //
+  // DOM hierarchy:
+  //   MeetingRoom (flex-1) ← parent controller
+  //   └── relative div (flex-1) ← positioned ancestor for absolute positioning
+  //       └── ScreenShareView (containerRef, relative)
+  //           └── screen-share-stage (flex-1 w-full h-full) ← positioned ancestor for annotation
+  //               ├── VideoTrack (absolute inset-0)
+  //               └── annotation-overlay (absolute inset-0)
+  //                   └── this WhiteboardPanel (absolute inset-0)
+  //
+  // When MeetingRoom resizes smaller:
+  //   - screen-share-stage shrinks (flex-1 inherits new parent size)
+  //   - annotation-overlay (absolute inset-0) inherits the new screen-share-stage dimensions
+  //   - WhiteboardCanvas inside shrinks with it
   if (annotationMode) {
     return (
       /*

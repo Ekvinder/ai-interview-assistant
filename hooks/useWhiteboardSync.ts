@@ -83,6 +83,11 @@ import {
   deserializeMessage,
 } from "@/lib/whiteboard/serializer";
 import { getSceneVersion } from "@/utils/whiteboard";
+import {
+  normalizeElements,
+  denormalizeElements,
+  type StageSize,
+} from "@/utils/annotationCoordinates";
 
 const WHITEBOARD_TOPIC = "whiteboard" as const;
 const DEBOUNCE_MS = 250;
@@ -146,7 +151,10 @@ export function useWhiteboardSync(
   isHost: boolean,
   syncTarget: "whiteboard" | "annotation",
   hostWhiteboardOpenRef?: React.RefObject<boolean>,
-  hostAnnotationActiveRef?: React.RefObject<boolean>
+  hostAnnotationActiveRef?: React.RefObject<boolean>,
+  /** Ref to the current screen-share-stage dimensions. Used only when
+   *  syncTarget === "annotation" to normalize/denormalize element coordinates. */
+  stageSizeRef?: React.RefObject<StageSize>
 ): UseWhiteboardSyncReturn {
   // ── Refs ───────────────────────────────────────────────────────────────────
 
@@ -212,15 +220,29 @@ export function useWhiteboardSync(
       pendingUpdatesRef.current.push(update);
       return;
     }
-    lastSyncedVersionRef.current = getSceneVersion(update.elements);
-    api.updateScene({ elements: update.elements, captureUpdate: "NEVER" });
+
+    // For annotation sync: incoming elements are in logical [0,1] coordinates.
+    // Denormalize them to the local stage's physical pixels before rendering.
+    let elements = update.elements;
+    if (syncTarget === "annotation" && stageSizeRef?.current) {
+      const stage = stageSizeRef.current;
+      if (stage.width > 0 && stage.height > 0) {
+        elements = denormalizeElements(
+          elements as unknown as Record<string, unknown>[],
+          stage
+        ) as unknown as typeof elements;
+      }
+    }
+
+    lastSyncedVersionRef.current = getSceneVersion(elements);
+    api.updateScene({ elements, captureUpdate: "NEVER" });
     if (update.files) {
       const vals = Object.values(update.files);
       if (vals.length > 0) {
         try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
       }
     }
-  }, []);
+  }, [syncTarget, stageSizeRef]);
 
   const applyFullSync = useCallback((scene: WhiteboardSceneData) => {
     const api = excalidrawApiRef.current;
@@ -230,10 +252,24 @@ export function useWhiteboardSync(
       pendingUpdatesRef.current = [];
       return;
     }
-    lastSyncedVersionRef.current = getSceneVersion(scene.elements);
+
+    // For annotation sync: incoming elements are in logical [0,1] coordinates.
+    // Denormalize to local stage pixels before rendering.
+    let elements = scene.elements;
+    if (syncTarget === "annotation" && stageSizeRef?.current) {
+      const stage = stageSizeRef.current;
+      if (stage.width > 0 && stage.height > 0) {
+        elements = denormalizeElements(
+          elements as unknown as Record<string, unknown>[],
+          stage
+        ) as unknown as typeof elements;
+      }
+    }
+
+    lastSyncedVersionRef.current = getSceneVersion(elements);
     const currentAppState = api.getAppState();
     api.updateScene({
-      elements: scene.elements,
+      elements,
       appState: {
         ...scene.appState,
         viewBackgroundColor: currentAppState.viewBackgroundColor,
@@ -246,7 +282,7 @@ export function useWhiteboardSync(
         try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
       }
     }
-  }, []);
+  }, [syncTarget, stageSizeRef]);
 
   /**
    * Flush pending updates that arrived before the Excalidraw API was ready.
@@ -265,15 +301,27 @@ export function useWhiteboardSync(
       const api = excalidrawApiRef.current;
       if (!api) return; // canvas not ready yet, try next tick
 
+      // Helper: denormalize elements if this is an annotation sync and stage is known
+      const maybeDeNorm = (els: WhiteboardSceneData["elements"]): WhiteboardSceneData["elements"] => {
+        if (syncTarget !== "annotation" || !stageSizeRef?.current) return els;
+        const stage = stageSizeRef.current;
+        if (stage.width === 0 || stage.height === 0) return els;
+        return denormalizeElements(
+          els as unknown as Record<string, unknown>[],
+          stage
+        ) as unknown as typeof els;
+      };
+
       // A queued full-sync supersedes all incremental updates.
       const pendingFull = pendingFullSyncRef.current;
       if (pendingFull) {
         pendingFullSyncRef.current = null;
         pendingUpdatesRef.current = [];
-        lastSyncedVersionRef.current = getSceneVersion(pendingFull.elements);
+        const elements = maybeDeNorm(pendingFull.elements);
+        lastSyncedVersionRef.current = getSceneVersion(elements);
         const currentAppState = api.getAppState();
         api.updateScene({
-          elements: pendingFull.elements,
+          elements,
           appState: {
             ...pendingFull.appState,
             viewBackgroundColor: currentAppState.viewBackgroundColor,
@@ -294,8 +342,9 @@ export function useWhiteboardSync(
       if (pending.length === 0) return;
       const latest = pending[pending.length - 1];
       pendingUpdatesRef.current = [];
-      lastSyncedVersionRef.current = getSceneVersion(latest.elements);
-      api.updateScene({ elements: latest.elements, captureUpdate: "NEVER" });
+      const elements = maybeDeNorm(latest.elements);
+      lastSyncedVersionRef.current = getSceneVersion(elements);
+      api.updateScene({ elements, captureUpdate: "NEVER" });
       if (latest.files) {
         const vals = Object.values(latest.files);
         if (vals.length > 0) {
@@ -304,7 +353,7 @@ export function useWhiteboardSync(
       }
     }, 150);
     return () => clearInterval(interval);
-  }, []);
+  }, [syncTarget, stageSizeRef]);
 
   const requestResync = useCallback(() => {
     const identity = room.localParticipant.identity;
@@ -352,6 +401,17 @@ export function useWhiteboardSync(
       switch (message.type) {
         case "scene-update": {
           // console.log("[WB CHANNEL RECEIVE]", { topic: WHITEBOARD_TOPIC, type: message.type, sender: senderIdentity, target: message.target });
+          if (message.update.elements.length > 0) {
+            console.log("[ANNOTATION RECEIVE ELEMENTS]", {
+              sender: senderIdentity,
+              target: message.target,
+              sampleElement: message.update.elements[0],
+              allElements: message.update.elements.map(el => {
+                const e = el as Record<string, unknown>;
+                return { id: e.id, type: e.type, x: e.x, y: e.y, width: e.width, height: e.height, points: e.points };
+              })
+            });
+          }
           const isFromHost = senderIdentity === hostIdentityRef.current;
           const isFromController = senderIdentity != null && controllersRef.current.has(senderIdentity);
           if (!isFromHost && !isFromController) return;
@@ -496,11 +556,40 @@ export function useWhiteboardSync(
     if (currentVersion === lastSyncedVersionRef.current) return;
     lastSyncedVersionRef.current = currentVersion;
 
-    const update = sceneToUpdate(scene);
-    const fullData = sceneToFullData(scene);
+    // For annotation sync: normalize physical pixel coordinates to logical [0,1]
+    // relative to the local stage before putting elements on the wire.
+    let elementsToSend = scene.elements;
+    if (syncTarget === "annotation" && stageSizeRef?.current) {
+      const stage = stageSizeRef.current;
+      if (stage.width > 0 && stage.height > 0) {
+        elementsToSend = normalizeElements(
+          elementsToSend as unknown as Record<string, unknown>[],
+          stage
+        ) as unknown as typeof elementsToSend;
+      }
+    }
+
+    const wireScene: WhiteboardScene = { ...scene, elements: elementsToSend };
+    const update = sceneToUpdate(wireScene);
+    const fullData = sceneToFullData(wireScene);
+    // Store the raw (physical) scene locally so full-sync responses to late
+    // joiners always contain normalized coordinates too (we normalise above).
     lastLocalSceneRef.current = { full: fullData, update };
 
-    // console.log("[WB LOCAL CHANGE]", { identity, version: currentVersion, elementsCount: scene.elements.length });
+    if (scene.elements.length > 0) {
+      console.log("[ANNOTATION ELEMENT STRUCTURE]", {
+        sampleElement: scene.elements[0],
+        allElements: scene.elements.map(el => ({
+          id: el.id,
+          type: el.type,
+          x: (el as Record<string,unknown>).x,
+          y: (el as Record<string,unknown>).y,
+          width: (el as Record<string,unknown>).width,
+          height: (el as Record<string,unknown>).height,
+          points: (el as Record<string,unknown>).points,
+        }))
+      });
+    }
     if (annotationActiveRef.current) {
       // console.log("[ANNOTATION LOCAL CHANGE]", { identity, version: currentVersion, elementsCount: scene.elements.length });
     }
@@ -515,12 +604,7 @@ export function useWhiteboardSync(
           sender: identity,
           timestamp: Date.now(),
         };
-      // console.log("[WB SEND]", { type: message.type, sender: identity });
       // console.log("[WB CHANNEL SEND]", { topic: WHITEBOARD_TOPIC, type: message.type });
-      // console.log("[WB SEND PAYLOAD]", { type: message.type, elementCount: message.update.elements.length, sender: identity });
-      if (annotationActiveRef.current) {
-        // console.log("[ANNOTATION SEND]", { type: message.type, sender: identity, elementCount: message.update.elements.length });
-      }
       sendRef.current(serializeMessage(message), {
         reliable: true,
         topic: WHITEBOARD_TOPIC,
@@ -543,7 +627,7 @@ export function useWhiteboardSync(
         performSend();
       }, 60 - timeSinceLastSend);
     }
-  }, []);
+  }, [syncTarget, stageSizeRef]);
 
   // ── Host broadcast helpers ────────────────────────────────────────────────
 
