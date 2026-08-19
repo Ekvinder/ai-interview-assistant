@@ -40,7 +40,7 @@ export function CreateMeetingDialog({ onSuccess, trigger }: CreateMeetingDialogP
   const [meetingType, setMeetingType] = useState<'instant' | 'scheduled'>('instant');
   const [scheduledFor, setScheduledFor] = useState('');
   const [scheduledForError, setScheduledForError] = useState<string | null>(null);
-  const [duration, setDuration] = useState(30);
+
   const [isPrivate, setIsPrivate] = useState(false);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
 
@@ -49,7 +49,7 @@ export function CreateMeetingDialog({ onSuccess, trigger }: CreateMeetingDialogP
     setMeetingType('instant');
     setScheduledFor('');
     setScheduledForError(null);
-    setDuration(30);
+    // setDuration(30);
     setIsPrivate(false);
     setSettings(DEFAULT_SETTINGS);
     setError(null);
@@ -91,7 +91,7 @@ export function CreateMeetingDialog({ onSuccess, trigger }: CreateMeetingDialogP
         title: title.trim(),
         isInstant: meetingType === 'instant',
         isPrivate,
-        duration: Number(duration),
+        duration: undefined,
         scheduledFor:
           meetingType === 'scheduled' && scheduledFor
             ? new Date(scheduledFor).toISOString()
@@ -185,21 +185,8 @@ export function CreateMeetingDialog({ onSuccess, trigger }: CreateMeetingDialogP
             </div>
           )}
 
-          {/* Duration */}
-          <div className="space-y-2">
-            <Label htmlFor="duration">Duration (minutes)</Label>
-            <Input
-              id="duration"
-              type="number"
-              min={5}
-              max={240}
-              value={duration}
-              onChange={e => setDuration(Number(e.target.value))}
-            />
-          </div>
-
           {/* Private toggle */}
-          <div className="flex items-center gap-2">
+          {/* <div className="flex items-center gap-2">
             <input
               id="isPrivate"
               type="checkbox"
@@ -210,10 +197,10 @@ export function CreateMeetingDialog({ onSuccess, trigger }: CreateMeetingDialogP
             <Label htmlFor="isPrivate" className="cursor-pointer font-normal">
               Private meeting
             </Label>
-          </div>
+          </div> */}
 
           {/* Settings */}
-          <div className="border-t pt-4 space-y-2">
+          {/* <div className="border-t pt-4 space-y-2">
             <Label>Settings</Label>
             <div className="grid grid-cols-2 gap-2 text-sm">
               {(Object.entries(settings) as [keyof typeof settings, boolean][]).map(([key, value]) => (
@@ -229,7 +216,7 @@ export function CreateMeetingDialog({ onSuccess, trigger }: CreateMeetingDialogP
                 </label>
               ))}
             </div>
-          </div>
+          </div> */}
 
           <div className="flex justify-end gap-2 pt-4">
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>

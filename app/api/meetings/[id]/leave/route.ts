@@ -17,12 +17,22 @@ export async function POST(
 ) {
   try {
     const user = await getCurrentUser();
-    if (!user) {
-      return createResponse(false, 'Unauthorized', null, 401);
+    
+    // Attempt to read body for guestId. Not all leave requests will have a body.
+    let guestId: string | undefined;
+    try {
+      const body = await _req.json();
+      guestId = body?.guestId;
+    } catch (e) {
+      // Ignore JSON parse errors for empty bodies
+    }
+
+    if (!user && !guestId) {
+      return createResponse(false, 'Unauthorized or missing guest info', null, 401);
     }
 
     const { id: meetingId } = await params;
-    const meeting = await MeetingService.leaveMeeting(user.userId, meetingId);
+    const meeting = await MeetingService.leaveMeeting(user?.userId, meetingId, guestId);
     return createResponse(true, 'Left meeting successfully', meeting);
   } catch (error: unknown) {
     console.error('POST /api/meetings/[id]/leave error:', error);

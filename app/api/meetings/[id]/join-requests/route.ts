@@ -13,14 +13,23 @@ export async function GET(
 ) {
   try {
     const user = await getCurrentUser();
-    if (!user) return createResponse(false, 'Unauthorized', null, 401);
+    const { searchParams } = new URL(_req.url);
+    const guestId = searchParams.get('guestId') ?? undefined;
+
+    if (!user && !guestId) return createResponse(false, 'Unauthorized', null, 401);
+    
     const { id: meetingId } = await params;
     const meeting = await MeetingService.getMeetingByMeetingId(meetingId);
-    const hostId = meeting.host._id?.toString() ?? meeting.host.toString();
-    if (hostId === user.userId) {
-      return createResponse(true, 'Pending join requests fetched', await MeetingService.getPendingJoinRequests(user.userId, meetingId));
+    
+    // Only a logged in user can be the host
+    if (user) {
+      const hostId = meeting.host._id?.toString() ?? meeting.host.toString();
+      if (hostId === user.userId) {
+        return createResponse(true, 'Pending join requests fetched', await MeetingService.getPendingJoinRequests(user.userId, meetingId));
+      }
     }
-    return createResponse(true, 'Join request status fetched', await MeetingService.getJoinRequestStatus(user.userId, meetingId));
+    
+    return createResponse(true, 'Join request status fetched', await MeetingService.getJoinRequestStatus(user?.userId, meetingId, guestId));
   } catch (error: unknown) {
     const err = error as { statusCode?: number; message?: string };
     return createResponse(false, err.message || 'Failed to fetch join request', null, err.statusCode || 500);

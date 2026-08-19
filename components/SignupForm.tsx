@@ -40,7 +40,7 @@ export default function SignupForm() {
       // Honour the callbackUrl set by middleware (e.g. when landing on a
       // meeting link while unauthenticated). Fall back to dashboard.
       const callbackUrl = searchParams.get('callbackUrl');
-      router.push(callbackUrl || '/dashboard');
+      router.push(callbackUrl || '/login');
     } catch {
       setError('Something went wrong. Please try again.');
     } finally {

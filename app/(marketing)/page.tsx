@@ -1,6 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { JoinMeetingDialog } from '@/components/dashboard/JoinMeetingDialog';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 
 export default function MarketingPage() {
@@ -12,13 +13,14 @@ export default function MarketingPage() {
         <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
           Professional Video Meetings for Teams, Businesses & Collaboration. Secure, HD, and easy to use.
         </p>
-        <div className="flex justify-center space-x-4">
-          <Link href="/signup">
-            <Button size="lg">Start Meeting</Button>
-          </Link>
+        <div className="flex flex-col sm:flex-row justify-center gap-4">
           <Link href="/login">
-            <Button variant="outline" size="lg">Join Meeting</Button>
+            <Button size="lg" className="w-full sm:w-auto">Start Meeting</Button>
           </Link>
+          <JoinMeetingDialog
+            trigger={<Button variant="outline" size="lg" className="w-full sm:w-auto">Join Meeting</Button>}
+          />
+
         </div>
       </section>
 
@@ -179,14 +181,6 @@ export default function MarketingPage() {
             <dd className="text-muted-foreground mt-1">Yes, all meetings use enterprise-grade encryption to ensure your data stays private.</dd>
           </div>
         </dl>
-      </section>
-
-      {/* CTA */}
-      <section className="bg-primary/10 py-20 text-center border-t border-primary/20">
-        <h2 className="text-4xl font-bold mb-6 text-primary">Ready to collaborate?</h2>
-        <Link href="/signup">
-          <Button size="lg" className="px-8 shadow-lg">Start Free Trial</Button>
-        </Link>
       </section>
 
       {/* Footer */}

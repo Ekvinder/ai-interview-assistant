@@ -57,15 +57,16 @@ export const meetingClientService = {
     });
   },
 
-  joinMeeting: async (meetingId: string): Promise<{ status: JoinRequestStatus }> => {
+  joinMeeting: async (meetingId: string, guestId?: string, guestName?: string): Promise<{ status: JoinRequestStatus }> => {
     return apiFetch<{ status: JoinRequestStatus }>('/api/meetings/join', {
       method: 'POST',
-      body: JSON.stringify({ meetingId }),
+      body: JSON.stringify({ meetingId, guestId, guestName }),
     });
   },
 
-  getJoinRequestStatus: async (meetingId: string): Promise<JoinRequestStatus> => {
-    const result = await apiFetch<{ status: JoinRequestStatus }>(`/api/meetings/${meetingId}/join-requests`);
+  getJoinRequestStatus: async (meetingId: string, guestId?: string): Promise<JoinRequestStatus> => {
+    const url = guestId ? `/api/meetings/${meetingId}/join-requests?guestId=${encodeURIComponent(guestId)}` : `/api/meetings/${meetingId}/join-requests`;
+    const result = await apiFetch<{ status: JoinRequestStatus }>(url);
     return result.status;
   },
 
@@ -103,9 +104,10 @@ export const meetingClientService = {
    * Record that the current user has left the meeting (does not end it for everyone).
    * Uses the public meetingId string (not the internal _id).
    */
-  leaveMeeting: async (meetingId: string): Promise<IMeeting> => {
+  leaveMeeting: async (meetingId: string, guestId?: string): Promise<IMeeting> => {
     return apiFetch<IMeeting>(`/api/meetings/${meetingId}/leave`, {
       method: 'POST',
+      body: guestId ? JSON.stringify({ guestId }) : undefined,
     });
   },
 

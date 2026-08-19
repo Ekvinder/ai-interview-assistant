@@ -73,32 +73,51 @@ export default function ScreenShareView({
     return () => observer.disconnect();
   }, []);
 
-  // Observe video element intrinsic size
+  // Observe video element intrinsic size.
+  // For remote screen-share tracks, videoWidth/videoHeight may be set
+  // before our observer attaches, so we also poll as a fallback.
   useEffect(() => {
     if (!containerRef.current) return;
 
     let videoEl: HTMLVideoElement | null = null;
-    let observer: ResizeObserver | null = null;
+    let intrinsicObserver: ResizeObserver | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    const handleVideoResize = () => {
-      if (videoEl && videoEl.videoWidth && videoEl.videoHeight) {
+    const readIntrinsic = () => {
+      if (videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
         setVideoSize({ width: videoEl.videoWidth, height: videoEl.videoHeight });
+        // Stop polling once we have valid dimensions — events will keep it current
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       }
     };
 
     const setupVideo = (v: HTMLVideoElement) => {
       if (videoEl === v) return;
       if (videoEl) {
-        videoEl.removeEventListener('resize', handleVideoResize);
-        videoEl.removeEventListener('loadedmetadata', handleVideoResize);
-        observer?.disconnect();
+        videoEl.removeEventListener('resize', readIntrinsic);
+        videoEl.removeEventListener('loadedmetadata', readIntrinsic);
+        videoEl.removeEventListener('loadeddata', readIntrinsic);
+        videoEl.removeEventListener('canplay', readIntrinsic);
+        intrinsicObserver?.disconnect();
       }
+      if (pollTimer) clearInterval(pollTimer);
+
       videoEl = v;
-      videoEl.addEventListener('resize', handleVideoResize);
-      videoEl.addEventListener('loadedmetadata', handleVideoResize);
-      observer = new ResizeObserver(handleVideoResize);
-      observer.observe(videoEl);
-      handleVideoResize();
+      videoEl.addEventListener('resize', readIntrinsic);
+      videoEl.addEventListener('loadedmetadata', readIntrinsic);
+      videoEl.addEventListener('loadeddata', readIntrinsic);
+      videoEl.addEventListener('canplay', readIntrinsic);
+
+      // Observe the video element's rendered size — when LiveKit sets
+      // clientWidth/clientHeight we can re-read videoWidth/videoHeight.
+      intrinsicObserver = new ResizeObserver(readIntrinsic);
+      intrinsicObserver.observe(videoEl);
+
+      // Fallback poll: remote tracks often have dimensions already set
+      pollTimer = setInterval(readIntrinsic, 200);
+
+      // Try immediately
+      readIntrinsic();
     };
 
     const checkVideo = () => {
@@ -107,19 +126,19 @@ export default function ScreenShareView({
     };
 
     checkVideo();
-    
-    const mutObserver = new MutationObserver(() => {
-      checkVideo();
-    });
+    const mutObserver = new MutationObserver(checkVideo);
     mutObserver.observe(containerRef.current, { childList: true, subtree: true });
 
     return () => {
       if (videoEl) {
-        videoEl.removeEventListener('resize', handleVideoResize);
-        videoEl.removeEventListener('loadedmetadata', handleVideoResize);
+        videoEl.removeEventListener('resize', readIntrinsic);
+        videoEl.removeEventListener('loadedmetadata', readIntrinsic);
+        videoEl.removeEventListener('loadeddata', readIntrinsic);
+        videoEl.removeEventListener('canplay', readIntrinsic);
       }
-      observer?.disconnect();
+      intrinsicObserver?.disconnect();
       mutObserver.disconnect();
+      if (pollTimer) clearInterval(pollTimer);
     };
   }, [hasTrack]);
 
@@ -237,7 +256,18 @@ export default function ScreenShareView({
             style={{ objectFit: 'fill' }}
           />
           {children && (
-            <div className="annotation-overlay absolute inset-0 overflow-hidden min-h-0 min-w-0">
+            <div
+              className="annotation-overlay"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                overflow: 'hidden',
+                pointerEvents: 'none',
+              }}
+            >
               {children}
             </div>
           )}

@@ -52,10 +52,20 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   });
 
-  const json = await res.json();
+  // Guard against empty bodies (204 No Content, etc.) or non-JSON responses.
+  // res.json() throws or returns undefined when the body is empty/malformed.
+  let json: { success?: boolean; message?: string; data?: unknown } | undefined;
+  const contentType = res.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json') || contentType.includes('text/plain')) {
+    try {
+      json = await res.json();
+    } catch {
+      // body was empty or not valid JSON — fall through to the error below
+    }
+  }
 
-  if (!res.ok || !json.success) {
-    throw new Error(json.message ?? `Request failed with status ${res.status}`);
+  if (!res.ok || !json?.success) {
+    throw new Error(json?.message ?? `Request failed with status ${res.status}`);
   }
 
   return json.data as T;

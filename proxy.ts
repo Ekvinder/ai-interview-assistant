@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, COOKIE_NAME } from './lib/auth';
 
-const PROTECTED_PATHS = ['/dashboard', '/interviews', '/meeting'];
+const PROTECTED_PATHS = ['/dashboard', '/interviews'];
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

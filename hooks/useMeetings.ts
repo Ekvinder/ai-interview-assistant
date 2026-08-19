@@ -24,6 +24,14 @@ export function useMeetings({ type, initialPage = 1, limit = 10 }: UseMeetingsPr
       let result;
       if (type === 'upcoming') {
         result = await meetingClientService.getUpcomingMeetings(currentPage, limit);
+        // Ensure newest upcoming meetings appear first
+        if (result && Array.isArray(result.meetings)) {
+          result.meetings.sort((a, b) => {
+            const dateA = new Date(a.scheduledFor || a.createdAt);
+            const dateB = new Date(b.scheduledFor || b.createdAt);
+            return dateB.getTime() - dateA.getTime();
+          });
+        }
       } else {
         result = await meetingClientService.getMeetingHistory(currentPage, limit);
       }

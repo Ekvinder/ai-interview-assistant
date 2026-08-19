@@ -7,6 +7,7 @@ import { ApiError } from '../utils/apiError';
 import { HTTP_STATUS } from '../utils/constants';
 import { connectToDatabase } from '../lib/mongodb';
 import type { CreateMeetingInput, UpdateMeetingInput } from '../validators/meeting.validator';
+import type { IParticipant, MeetingStatus } from '../types';
 import crypto from 'crypto';
 
 export class MeetingService {
@@ -132,7 +133,7 @@ export class MeetingService {
     }
   }
 
-  static async joinMeeting(userId: string, meetingId: string) {
+  static async joinMeeting(userId: string | undefined, meetingId: string, guestId?: string, guestName?: string) {
     try {
       await connectToDatabase();
       
@@ -140,25 +141,48 @@ export class MeetingService {
         throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
       }
       
-      const userObjectId = new Types.ObjectId(userId);
-      
-      // Check if user is already a participant
-      const existingParticipant = meeting.participants.find(
-        (p: { user: Types.ObjectId; isPresent: boolean; leftAt?: Date; joinedAt?: Date }) => p.user.toString() === userObjectId.toString()
-      );
-      
-      if (!existingParticipant) {
-        meeting.participants.push({
-          user: userObjectId,
-          role: meeting.host.toString() === userId ? 'host' : 'participant',
-          joinedAt: new Date(),
-          isPresent: true,
-          micEnabled: meeting.settings?.allowMic ?? true,
-          cameraEnabled: meeting.settings?.allowCamera ?? true,
-          handRaised: false
-        });
-        await meeting.save();
-      } else if (!existingParticipant.isPresent) {
+      let existingParticipant;
+      if (userId) {
+        const userObjectId = new Types.ObjectId(userId);
+        existingParticipant = meeting.participants.find(
+          (p: { user?: Types.ObjectId; isPresent: boolean; leftAt?: Date; joinedAt?: Date }) => p.user?.toString() === userObjectId.toString()
+        );
+        
+        if (!existingParticipant) {
+          meeting.participants.push({
+            user: userObjectId,
+            role: meeting.host.toString() === userId ? 'host' : 'participant',
+            joinedAt: new Date(),
+            isPresent: true,
+            micEnabled: meeting.settings?.allowMic ?? true,
+            cameraEnabled: meeting.settings?.allowCamera ?? true,
+            handRaised: false
+          });
+          await meeting.save();
+        }
+      } else if (guestId) {
+        existingParticipant = meeting.participants.find(
+          (p: { guestId?: string; isPresent: boolean; leftAt?: Date; joinedAt?: Date }) => p.guestId === guestId
+        );
+        
+        if (!existingParticipant) {
+          meeting.participants.push({
+            guestId,
+            guestName,
+            role: 'participant',
+            joinedAt: new Date(),
+            isPresent: true,
+            micEnabled: meeting.settings?.allowMic ?? true,
+            cameraEnabled: meeting.settings?.allowCamera ?? true,
+            handRaised: false
+          });
+          await meeting.save();
+        }
+      } else {
+        throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Must provide userId or guestId');
+      }
+
+      if (existingParticipant && !existingParticipant.isPresent) {
         existingParticipant.isPresent = true;
         existingParticipant.joinedAt = new Date();
         await meeting.save();
@@ -176,44 +200,73 @@ export class MeetingService {
    * Records a guest's request without admitting them to the meeting. The host is
    * admitted immediately because they own the room.
    */
-  static async requestJoin(userId: string, meetingId: string) {
+  static async requestJoin(userId: string | undefined, meetingId: string, guestId?: string, guestName?: string) {
     await connectToDatabase();
     const meeting = await Meeting.findOne({ meetingId });
     if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
     if (meeting.status === 'ended') throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'This meeting has ended');
 
-    if (meeting.host.toString() === userId) {
+    if (userId && meeting.host.toString() === userId) {
       await this.joinMeeting(userId, meetingId);
       return { status: 'approved' as const };
     }
 
-    const userObjectId = new Types.ObjectId(userId);
-    const requests = meeting.joinRequests ?? [];
-    const request = requests.find((r: { user: Types.ObjectId }) => r.user.toString() === userId);
-    const participant = meeting.participants.find((p: { user: Types.ObjectId; isPresent: boolean }) => p.user.toString() === userId);
-    // A previous approval is valid only while that admission is active. Once a
-    // guest leaves or is removed, a later join must be approved again.
-    const needsNewApproval = request?.status === 'approved' && !participant?.isPresent;
-    if (!request || request.status === 'denied' || needsNewApproval) {
-      if (request) {
-        request.status = 'pending';
-        request.requestedAt = new Date();
-        request.decidedAt = undefined;
-      } else {
-        meeting.joinRequests.push({ user: userObjectId, status: 'pending', requestedAt: new Date() });
+    let request;
+    let participant;
+    if (userId) {
+      const userObjectId = new Types.ObjectId(userId);
+      const requests = meeting.joinRequests ?? [];
+      request = requests.find((r: { user?: Types.ObjectId }) => r.user?.toString() === userId);
+      participant = meeting.participants.find((p: { user?: Types.ObjectId; isPresent: boolean }) => p.user?.toString() === userId);
+      
+      const needsNewApproval = request?.status === 'approved' && !participant?.isPresent;
+      if (!request || request.status === 'denied' || needsNewApproval) {
+        if (request) {
+          request.status = 'pending';
+          request.requestedAt = new Date();
+          request.decidedAt = undefined;
+        } else {
+          meeting.joinRequests.push({ user: userObjectId, status: 'pending', requestedAt: new Date() });
+        }
+        await meeting.save();
+        return { status: 'pending' as const };
       }
-      await meeting.save();
-      return { status: 'pending' as const };
+    } else if (guestId) {
+      const requests = meeting.joinRequests ?? [];
+      request = requests.find((r: { guestId?: string }) => r.guestId === guestId);
+      participant = meeting.participants.find((p: { guestId?: string; isPresent: boolean }) => p.guestId === guestId);
+      
+      const needsNewApproval = request?.status === 'approved' && !participant?.isPresent;
+      if (!request || request.status === 'denied' || needsNewApproval) {
+        if (request) {
+          request.status = 'pending';
+          request.requestedAt = new Date();
+          request.decidedAt = undefined;
+          request.guestName = guestName;
+        } else {
+          meeting.joinRequests.push({ guestId, guestName, status: 'pending', requestedAt: new Date() });
+        }
+        await meeting.save();
+        return { status: 'pending' as const };
+      }
+    } else {
+      throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Must provide userId or guestId');
     }
     return { status: request.status as 'pending' | 'approved' | 'denied' };
   }
 
-  static async getJoinRequestStatus(userId: string, meetingId: string) {
+  static async getJoinRequestStatus(userId: string | undefined, meetingId: string, guestId?: string) {
     await connectToDatabase();
     const meeting = await Meeting.findOne({ meetingId }).select('host joinRequests status');
     if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
-    if (meeting.host.toString() === userId) return { status: 'approved' as const };
-    const request = (meeting.joinRequests ?? []).find((r: { user: Types.ObjectId }) => r.user.toString() === userId);
+    if (userId && meeting.host.toString() === userId) return { status: 'approved' as const };
+    
+    let request;
+    if (userId) {
+      request = (meeting.joinRequests ?? []).find((r: { user?: Types.ObjectId }) => r.user?.toString() === userId);
+    } else if (guestId) {
+      request = (meeting.joinRequests ?? []).find((r: { guestId?: string }) => r.guestId === guestId);
+    }
     return { status: (request?.status ?? 'pending') as 'pending' | 'approved' | 'denied' };
   }
 
@@ -224,9 +277,9 @@ export class MeetingService {
     if (meeting.host.toString() !== hostUserId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only the host can view join requests');
     return (meeting.joinRequests ?? [])
       .filter((request: { status: string }) => request.status === 'pending')
-      .map((request: { user: { _id: Types.ObjectId; name?: string; email?: string }; requestedAt: Date }) => ({
-        userId: request.user._id.toString(),
-        name: request.user.name || request.user.email || 'Guest',
+      .map((request: { user?: { _id: Types.ObjectId; name?: string; email?: string }; guestId?: string; guestName?: string; requestedAt: Date }) => ({
+        userId: request.user ? request.user._id.toString() : request.guestId,
+        name: request.user ? (request.user.name || request.user.email || 'Guest') : (request.guestName || 'Guest'),
         requestedAt: request.requestedAt,
       }));
   }
@@ -236,17 +289,24 @@ export class MeetingService {
     const meeting = await Meeting.findOne({ meetingId });
     if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
     if (meeting.host.toString() !== hostUserId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only the host can decide join requests');
-    const request = (meeting.joinRequests ?? []).find((r: { user: Types.ObjectId }) => r.user.toString() === guestUserId);
+    const request = (meeting.joinRequests ?? []).find((r: { user?: Types.ObjectId; guestId?: string }) => r.user?.toString() === guestUserId || r.guestId === guestUserId);
     if (!request || request.status !== 'pending') throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Join request is no longer pending');
 
     request.status = approved ? 'approved' : 'denied';
     request.decidedAt = new Date();
     await meeting.save();
-    if (approved) await this.joinMeeting(guestUserId, meetingId);
+    
+    if (approved) {
+      if (request.user) {
+        await this.joinMeeting(guestUserId, meetingId);
+      } else {
+        await this.joinMeeting(undefined, meetingId, request.guestId, request.guestName);
+      }
+    }
     return { status: request.status as 'approved' | 'denied' };
   }
 
-  static async leaveMeeting(userId: string, meetingId: string) {
+  static async leaveMeeting(userId: string | undefined, meetingId: string, guestId?: string) {
     try {
       await connectToDatabase();
       
@@ -255,23 +315,29 @@ export class MeetingService {
         throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
       }
       
-      const userObjectId = new Types.ObjectId(userId);
-      const participant = meeting.participants.find(
-        (p: { user: Types.ObjectId; isPresent: boolean; leftAt?: Date; joinedAt?: Date }) => p.user.toString() === userObjectId.toString()
-      );
+      let participant;
+      if (userId) {
+        const userObjectId = new Types.ObjectId(userId);
+        participant = meeting.participants.find(
+          (p: { user?: Types.ObjectId; isPresent: boolean; leftAt?: Date; joinedAt?: Date }) => p.user?.toString() === userObjectId.toString()
+        );
+      } else if (guestId) {
+        participant = meeting.participants.find(
+          (p: { guestId?: string; isPresent: boolean; leftAt?: Date; joinedAt?: Date }) => p.guestId === guestId
+        );
+      }
       
       if (participant) {
         participant.isPresent = false;
         participant.leftAt = new Date();
       }
 
-      // A guest who leaves before approval must disappear from the host's
-      // pending-request list. Approved requests are retained as an audit trail
-      // and requestJoin requires a fresh approval after isPresent becomes false.
       if (!participant) {
         meeting.joinRequests = (meeting.joinRequests ?? []).filter(
-          (request: { user: Types.ObjectId; status: string }) =>
-            request.user.toString() !== userObjectId.toString() || request.status !== 'pending',
+          (request: { user?: Types.ObjectId; guestId?: string; status: string }) =>
+            (userId && request.user?.toString() !== userId) || 
+            (guestId && request.guestId !== guestId) || 
+            request.status !== 'pending'
         );
       }
       await meeting.save();
@@ -310,7 +376,7 @@ export class MeetingService {
       }
       
       // Mark all participants as left
-      meeting.participants.forEach((p: { user: Types.ObjectId; isPresent: boolean; leftAt?: Date; joinedAt?: Date }) => {
+      meeting.participants.forEach((p: IParticipant) => {
         if (p.isPresent) {
           p.isPresent = false;
           p.leftAt = new Date();
@@ -337,7 +403,7 @@ export class MeetingService {
       // Match meetings where user is host or participant
       const query = {
         $or: [{ host: userObjectId }, { 'participants.user': userObjectId }],
-        status: 'ended'
+        status: 'ended' as MeetingStatus
       };
       
       const [meetings, total] = await Promise.all([
@@ -400,7 +466,7 @@ export class MeetingService {
       // Instant meetings have no scheduledFor, so we cannot require that field.
       const query = {
         $or: [{ host: userObjectId }, { 'participants.user': userObjectId }],
-        status: { $in: ['scheduled', 'active'] },
+        status: { $in: ['scheduled', 'active'] as MeetingStatus[] },
       };
       
       const [meetings, total] = await Promise.all([
@@ -431,7 +497,7 @@ export class MeetingService {
       // WRITE operations (create, assign, status) keep the host-only guard.
       const isHost = meeting.host.toString() === userId;
       const isParticipant = meeting.participants.some(
-        (p: { user: Types.ObjectId }) => p.user.toString() === userId
+        (p: IParticipant) => p.user?.toString() === userId
       );
       if (!isHost && !isParticipant) {
         throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Not a member of this meeting');
@@ -491,12 +557,12 @@ export class MeetingService {
       if (meeting.host.toString() !== userId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only host can manage breakout rooms');
 
       // Remove from all existing breakout rooms first
-      meeting.breakoutRooms.forEach((room: any) => {
+      (meeting.breakoutRooms ?? []).forEach((room: any) => {
         room.participants = room.participants.filter((p: Types.ObjectId) => p.toString() !== participantId);
       });
 
       if (breakoutRoomId && breakoutRoomId !== 'main') {
-        const room = meeting.breakoutRooms.find((r: any) => r.id === breakoutRoomId);
+        const room = (meeting.breakoutRooms ?? []).find((r: any) => r.id === breakoutRoomId);
         if (!room) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Breakout room not found');
         room.participants.push(new Types.ObjectId(participantId));
       }

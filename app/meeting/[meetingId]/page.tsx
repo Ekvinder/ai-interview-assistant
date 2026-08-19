@@ -16,18 +16,25 @@ export default async function MeetingPage({
 }) {
   // Auth guard
   const user = await getCurrentUser();
-  if (!user) {
-    redirect('/login');
-  }
-
+  
   const { meetingId } = await params;
 
   // ── Fetch full user profile for display name ─────────────────────────────
-  await connectToDatabase();
-  const dbUser = await User.findById(user.userId).select('name email').lean();
-  const userName: string = (dbUser as { name?: string; email: string } | null)?.name
-    || (dbUser as { name?: string; email: string } | null)?.email
-    || user.email;
+  let userName = '';
+  let userEmail = '';
+  
+  if (!user) {
+    // Guest user; proceed without redirect. Guest info will be read from sessionStorage.
+    // No redirect to /login.
+  } else {
+    // Continue with authenticated user logic.
+    await connectToDatabase();
+    const dbUser = await User.findById(user.userId).select('name email').lean();
+    userName = (dbUser as { name?: string; email: string } | null)?.name
+      || (dbUser as { name?: string; email: string } | null)?.email
+      || user.email;
+    userEmail = user.email;
+  }
 
   // ── Fetch and validate the meeting ──────────────────────────────────────
   let meeting: IMeeting | null = null;
@@ -95,7 +102,7 @@ export default async function MeetingPage({
 
   // Hosts are admitted on page entry; guests are admitted only by the approval
   // endpoint after an explicit host decision.
-  if (hostUserId === user.userId) {
+  if (user && hostUserId === user.userId) {
     try { await MeetingService.joinMeeting(user.userId, meetingId); } catch { /* surfaced by room if needed */ }
   }
 
@@ -107,9 +114,9 @@ export default async function MeetingPage({
         status:    meeting.status,
         _id:       meeting._id.toString(),
       }}
-      userId={user.userId}
+      userId={user?.userId || ''}
       userName={userName}
-      userEmail={user.email}
+      userEmail={userEmail}
       hostUserId={hostUserId}
     />
   );

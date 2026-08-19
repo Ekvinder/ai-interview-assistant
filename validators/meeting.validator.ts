@@ -38,6 +38,8 @@ export const updateMeetingSchema = z.object({
 
 export const joinMeetingSchema = z.object({
   meetingId: z.string().min(1, 'Meeting ID is required').trim(),
+  guestName: z.string().trim().optional(),
+  guestId: z.string().trim().optional(),
 });
 
 export type CreateMeetingInput = z.infer<typeof createMeetingSchema>;

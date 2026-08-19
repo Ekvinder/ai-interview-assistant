@@ -216,7 +216,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
   const [serverUrl, setServerUrl]   = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [joinStatus, setJoinStatus] = useState<'pending' | 'approved' | 'denied'>(
-    userId === hostUserId ? 'approved' : 'pending',
+    (userId && userId === hostUserId) ? 'approved' : 'pending',
   );
   const [loading, setLoading] = useState(true);
   const leftRef        = useRef(false);
@@ -250,8 +250,11 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     (async () => {
       try {
         sessionStorage.removeItem(MEETING_TOKEN_KEY);
-        await meetingClientService.joinMeeting(meeting.meetingId);
-        const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId);
+        const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || undefined) : undefined;
+        const gName = !userId ? (sessionStorage.getItem('meetspace_guest_name') || undefined) : undefined;
+        
+        await meetingClientService.joinMeeting(meeting.meetingId, gId, gName);
+        const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId, gId);
         if (!cancelled) setJoinStatus(status);
       } catch (err) {
         if (!cancelled) setTokenError((err as Error).message || 'Failed to request admission');
@@ -260,7 +263,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       }
     })();
     return () => { cancelled = true; };
-  }, [isHost, meeting.meetingId]);
+  }, [isHost, meeting.meetingId, userId]);
 
   // ── Guest approval polling ─────────────────────────────────────────────────
   useEffect(() => {
@@ -268,9 +271,11 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     let delay = 2000;
     let timerId: ReturnType<typeof setTimeout>;
     let active = true;
+    const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || undefined) : undefined;
+    
     const poll = async () => {
       try {
-        const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId);
+        const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId, gId);
         if (!active) return;
         setJoinStatus(status);
         if (status !== 'pending') return;
@@ -280,7 +285,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     };
     timerId = setTimeout(poll, delay);
     return () => { active = false; clearTimeout(timerId); };
-  }, [isHost, joinStatus, meeting.meetingId]);
+  }, [isHost, joinStatus, meeting.meetingId, userId]);
 
   // ── Token fetch ────────────────────────────────────────────────────────────
   // Runs when:
@@ -301,12 +306,17 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
 
     (async () => {
       try {
+        const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || undefined) : undefined;
+        const gName = !userId ? (sessionStorage.getItem('meetspace_guest_name') || undefined) : undefined;
+        const finalUserId = userId || gId || 'unknown';
+        const finalUserName = userName || gName || 'Guest';
+        
         const { token: t, url: u } = await getLiveKitToken(
           meeting.meetingId,
-          userId,
+          finalUserId,
           {
-            name: userName,
-            metadata: JSON.stringify({ userId, email: userEmail, name: userName }),
+            name: finalUserName,
+            metadata: JSON.stringify({ userId: finalUserId, email: userEmail, name: finalUserName }),
             breakoutRoomId: targetBreakoutId || undefined,
           },
         );
@@ -356,18 +366,21 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     if (leftRef.current || isSwitchingRef.current) return;
     leftRef.current = true;
     sessionStorage.removeItem(MEETING_TOKEN_KEY);
-    void meetingClientService.leaveMeeting(meeting.meetingId).catch(() => undefined);
+    const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || undefined) : undefined;
+    void meetingClientService.leaveMeeting(meeting.meetingId, gId).catch(() => undefined);
     router.replace('/dashboard');
-  }, [meeting.meetingId, router]);
+  }, [meeting.meetingId, router, userId]);
 
   useEffect(() => {
     const h = () => {
       sessionStorage.removeItem(MEETING_TOKEN_KEY);
-      navigator.sendBeacon(`/api/meetings/${meeting.meetingId}/leave`);
+      const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || undefined) : undefined;
+      const body = gId ? JSON.stringify({ guestId: gId }) : '';
+      navigator.sendBeacon(`/api/meetings/${meeting.meetingId}/leave`, body);
     };
     window.addEventListener('pagehide', h);
     return () => window.removeEventListener('pagehide', h);
-  }, [meeting.meetingId]);
+  }, [meeting.meetingId, userId]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -612,7 +625,11 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
       // 2. Toast notification — always for incoming messages from others
       toast.message(`${senderName}: ${preview}`, {
         duration: 4000,
-        description: showPanelRef.current !== 'chat' ? 'Click Chat to reply' : undefined,
+        description: showPanelRef.current !== 'chat' ? 'Click to open chat' : undefined,
+        action: showPanelRef.current !== 'chat' ? {
+          label: 'Open',
+          onClick: () => togglePanel('chat')
+        } : undefined,
       });
 
       // 3. Sound — always for incoming from others
@@ -1061,15 +1078,12 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
                   onStopShare={handleScreenShare}
                   onStageSize={handleAnnotationStageSize}
                 >
-                  {/* Transparent annotation overlay — always mounted while screen share
-                      is active so WhiteboardCanvas (and useWhiteboardSync) are never
-                      destroyed.  Scene, undo history, and DataChannel state persist
-                      even when the overlay is visually hidden.
-                      The wrapper is absolute inset-0 so it never affects flow layout.
-                      pointer-events:none + opacity:0 hides it without unmounting. */}
+                  {/* Annotation — always mounted. Visibility controlled by opacity/pointerEvents.
+                      absolute inset-0 so it exactly fills annotation-overlay. */}
                   <div
-                    className="absolute inset-0"
                     style={{
+                      position: 'absolute',
+                      inset: 0,
                       pointerEvents: annotationActive ? 'auto' : 'none',
                       opacity: annotationActive ? 1 : 0,
                     }}
@@ -1153,22 +1167,24 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
         {/* Whiteboard panel (normal sidebar — only shown when not in screen-share
             annotation mode; in annotation mode the canvas lives inside the
             screen-share container above as an absolute overlay) */}
-        {showPanel === 'whiteboard' && !screenShareActive && (
-          <WhiteboardPanel
-            meetingId={meeting.meetingId}
-            isHost={isHost}
-            whiteboardLocked={whiteboardLocked}
-            localIdentity={localParticipant?.identity || userId}
-            onToggleLock={toggleWhiteboardLock}
-            controllers={controllers}
-            excalidrawApiRef={whiteboardExcalidrawApiRef}
-            onLocalChange={whiteboardHandleLocalChange}
-            onClose={() => {
-              setShowPanel(null);
-              // Host closing the panel closes the whiteboard for everyone.
-              if (isHost) setHostWhiteboardOpen(false);
-            }}
-          />
+        {(whiteboardOpen || showPanel === 'whiteboard') && !screenShareActive && (
+          <div className={showPanel === 'whiteboard' ? 'contents' : 'hidden'}>
+            <WhiteboardPanel
+              meetingId={meeting.meetingId}
+              isHost={isHost}
+              whiteboardLocked={whiteboardLocked}
+              localIdentity={localParticipant?.identity || userId}
+              onToggleLock={toggleWhiteboardLock}
+              controllers={controllers}
+              excalidrawApiRef={whiteboardExcalidrawApiRef}
+              onLocalChange={whiteboardHandleLocalChange}
+              onClose={() => {
+                setShowPanel(null);
+                // Host closing the panel closes the whiteboard for everyone.
+                if (isHost) setHostWhiteboardOpen(false);
+              }}
+            />
+          </div>
         )}
 
         {/* Host controls panel — host only */}

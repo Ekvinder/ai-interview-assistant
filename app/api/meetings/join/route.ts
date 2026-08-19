@@ -8,14 +8,19 @@ import { z } from 'zod';
 export async function POST(req: NextRequest) {
   try {
     const user = await getCurrentUser();
-    if (!user) {
-      return createResponse(false, 'Unauthorized', null, 401);
-    }
-
     const body = await req.json();
     const validatedData = joinMeetingSchema.parse(body);
 
-    const request = await MeetingService.requestJoin(user.userId, validatedData.meetingId);
+    if (!user && (!validatedData.guestName || !validatedData.guestId)) {
+      return createResponse(false, 'Unauthorized or missing guest info', null, 401);
+    }
+
+    const request = await MeetingService.requestJoin(
+      user?.userId,
+      validatedData.meetingId,
+      validatedData.guestId,
+      validatedData.guestName
+    );
     return createResponse(true, request.status === 'approved' ? 'Join approved' : 'Join request submitted', request);
   } catch (error: unknown) {
     console.error('POST /api/meetings/join error:', error);

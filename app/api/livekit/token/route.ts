@@ -16,18 +16,26 @@ export async function POST(request: NextRequest) {
     try {
       const meeting = await MeetingService.getMeetingByMeetingId(actualMeetingId);
       const user = await getCurrentUser();
-      if (!user) return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
-      if (identity !== user.userId) {
-        return NextResponse.json({ success: false, message: 'Invalid room identity' }, { status: 403 });
-      }
       
-      const hostId = meeting.host._id?.toString() ?? meeting.host.toString();
-      const isHost = (hostId === user.userId);
+      let isHost = false;
+      let participantId: string | undefined;
+
+      if (user) {
+        if (identity !== user.userId) {
+          return NextResponse.json({ success: false, message: 'Invalid room identity' }, { status: 403 });
+        }
+        const hostId = meeting.host._id?.toString() ?? meeting.host.toString();
+        isHost = (hostId === user.userId);
+        participantId = user.userId;
+      } else {
+        // Guest user
+        participantId = identity;
+      }
       
       // A JWT is the capability to enter a LiveKit room. Never mint one for a
       // pending or denied guest, even if they call this endpoint directly.
       if (!isHost) {
-        const { status } = await MeetingService.getJoinRequestStatus(user.userId, actualMeetingId);
+        const { status } = await MeetingService.getJoinRequestStatus(user?.userId, actualMeetingId, user ? undefined : participantId);
         if (status !== 'approved') {
           return NextResponse.json({ success: false, message: 'Waiting for host approval' }, { status: 403 });
         }
@@ -44,7 +52,7 @@ export async function POST(request: NextRequest) {
         }
         
         const isParticipant = breakoutRoom.participants?.some(
-          (p: any) => p.toString() === user.userId,
+          (p: any) => p.toString() === participantId,
         );
         if (!isHost && !isParticipant) {
           return NextResponse.json({ success: false, message: 'Not assigned to this breakout room' }, { status: 403 });

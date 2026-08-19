@@ -50,7 +50,7 @@ export default function WhiteboardPanel({
   // The panel becomes an absolute inset-0 layer over the screen-share
   // container.  Only the canvas and a minimal floating toolbar are rendered —
   // the normal sidebar chrome is hidden so it doesn't block the shared screen.
-  //
+  //container . only the canva and a minimal floating toolbar are render - 
   // DOM hierarchy:
   //   MeetingRoom (flex-1) ← parent controller
   //   └── relative div (flex-1) ← positioned ancestor for absolute positioning
@@ -66,26 +66,13 @@ export default function WhiteboardPanel({
   //   - WhiteboardCanvas inside shrinks with it
   if (annotationMode) {
     return (
-      /*
-       * Outer shell: absolute inset-0 so it exactly covers the screen-share
-       * container (which must be position:relative — ensured in MeetingRoom).
-       *
-       * z-10 places the overlay above the <VideoTrack> (z-0 default) but
-       * below the meeting header/footer (z-20+) and dialogs (z-30+).
-       *
-       * pointer-events-none on the outer shell, pointer-events-auto on the
-       * canvas child — this lets mouse events pass through to the video where
-       * the user isn't drawing, while still capturing strokes on the canvas.
-       * In practice Excalidraw captures pointer events on its own canvas
-       * element so pointer-events-auto on the wrapper div is required.
-       */
       <div
-        className="absolute inset-0 z-10 pointer-events-none"
+        style={{ position: 'absolute', inset: 0, zIndex: 10, pointerEvents: 'none' }}
         aria-label="Annotation overlay"
         role="region"
       >
-        {/* Canvas: fills the entire overlay area, captures pointer events */}
-        <div className="absolute inset-0 pointer-events-auto">
+        {/* Canvas fills the stage exactly via absolute inset-0 */}
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'auto' }}>
           <WhiteboardCanvas
             readOnly={readOnly}
             localIdentity={localIdentity}

@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Dialog,
@@ -25,7 +25,18 @@ export function JoinMeetingDialog({ trigger }: JoinMeetingDialogProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [meetingId, setMeetingId] = useState('');
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null);
+  const [guestName, setGuestName] = useState('');
+  const [guestId] = useState(() => Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15));
   const router = useRouter();
+
+  useEffect(() => {
+    if (open && isLoggedIn === null) {
+      fetch('/api/auth/me')
+        .then(res => setIsLoggedIn(res.ok))
+        .catch(() => setIsLoggedIn(false));
+    }
+  }, [open, isLoggedIn]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,11 +57,23 @@ export function JoinMeetingDialog({ trigger }: JoinMeetingDialogProps) {
     setLoading(true);
     setError(null);
     try {
-      await meetingClientService.joinMeeting(resolvedId);
+      await meetingClientService.joinMeeting(resolvedId, isLoggedIn ? undefined : guestId, isLoggedIn ? undefined : guestName);
+      
+      // If guest, store the guestId and guestName in sessionStorage so other pages (like waiting room) can pick it up if they want.
+      if (!isLoggedIn) {
+        sessionStorage.setItem('meetspace_guest_id', guestId);
+        sessionStorage.setItem('meetspace_guest_name', guestName);
+      }
+      
       setOpen(false);
       router.push(`/meeting/${resolvedId}`);
     } catch (err: any) {
-      setError(err.message || 'Failed to join meeting');
+      if (err.message?.toLowerCase().includes('unauthorized')) {
+        setIsLoggedIn(false);
+        setError('Please provide a name to join as a guest');
+      } else {
+        setError(err.message || 'Failed to join meeting');
+      }
     } finally {
       setLoading(false);
     }
@@ -76,6 +99,19 @@ export function JoinMeetingDialog({ trigger }: JoinMeetingDialogProps) {
               onChange={e => setMeetingId(e.target.value)}
             />
           </div>
+
+          {isLoggedIn === false && (
+            <div className="space-y-2">
+              <Label htmlFor="guestName">Your Name</Label>
+              <Input
+                id="guestName"
+                required
+                placeholder="Enter your name to join as guest"
+                value={guestName}
+                onChange={e => setGuestName(e.target.value)}
+              />
+            </div>
+          )}
 
           <div className="flex justify-end gap-2 pt-4">
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>

@@ -87,36 +87,21 @@ export default function WhiteboardCanvas({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [annotationMode]);
 
-  // CRITICAL: When parent container resizes, Excalidraw must recalculate its canvas.
-  // This ResizeObserver detects when the wrapper's size changes and calls refresh()
-  // to trigger Excalidraw's internal canvas recalculation.
-  useEffect(() => {
-    if (!wrapperRef.current) return;
-
-    const observer = new ResizeObserver(() => {
-      const api = excalidrawApiRef.current;
-      if (!api) return;
-      
-      // Trigger Excalidraw to recalculate its canvas size based on the new wrapper dimensions
-      api.refresh();
-    });
-
-    observer.observe(wrapperRef.current);
-    return () => observer.disconnect();
-  }, [excalidrawApiRef]);
+  // Excalidraw handles its own canvas resize via an internal ResizeObserver
+  // on its container element. We only need to ensure the wrapper div has the
+  // correct CSS dimensions — no manual refresh() call needed.
+  // The wrapperRef is kept for potential future use and for the mountedRef guard.
 
   return (
     <div
       ref={wrapperRef}
-      className="h-full w-full"
       style={annotationMode ? {
-        background: "transparent",
-        // Force the CSS cascade so Excalidraw's own stylesheet doesn't paint
-        // a background on top of the screen share.
-        // We use inline CSS custom properties so the override is scoped
-        // entirely to this element subtree without a global <style> injection.
-        colorScheme: "dark",
+        position: 'absolute',
+        inset: 0,
+        background: 'transparent',
+        colorScheme: 'dark',
       } : undefined}
+      className={annotationMode ? undefined : "h-full w-full"}
     >
       <Excalidraw
         excalidrawAPI={(instance) => {
@@ -135,6 +120,7 @@ export default function WhiteboardCanvas({
            // If the API ref is reassigned before the timer fires (remount),
            // the previous timer is harmless because mountedRef guards it.
            // Store it on the instance itself so nothing external needs cleanup.
+           // if the api ref is reassigned before the timer fires store it on the instance itsef so nothing external 
            (instance as unknown as { _bgTimer?: ReturnType<typeof setTimeout> })._bgTimer = timer;
         }}
         viewModeEnabled={readOnly}

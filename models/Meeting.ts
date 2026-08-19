@@ -3,7 +3,9 @@ import { IMeeting } from '../types';
 
 const ParticipantSchema = new Schema(
   {
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    user: { type: Schema.Types.ObjectId, ref: 'User', required: false },
+    guestName: { type: String, required: false },
+    guestId: { type: String, required: false },
     role: { type: String, enum: ['host', 'participant'], default: 'participant' },
     joinedAt: { type: Date, default: Date.now },
     leftAt: { type: Date },
@@ -17,7 +19,9 @@ const ParticipantSchema = new Schema(
 
 const JoinRequestSchema = new Schema(
   {
-    user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    user: { type: Schema.Types.ObjectId, ref: 'User', required: false },
+    guestName: { type: String, required: false },
+    guestId: { type: String, required: false },
     status: { type: String, enum: ['pending', 'approved', 'denied'], default: 'pending' },
     requestedAt: { type: Date, default: Date.now },
     decidedAt: { type: Date },
@@ -52,6 +56,7 @@ const MeetingSchema = new Schema<IMeeting>(
     host: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     participants: [ParticipantSchema],
     // Kept separate from participants: pending guests must not be treated as joined.
+ 
     joinRequests: { type: [JoinRequestSchema], default: [] },
     status: {
       type: String,
@@ -75,5 +80,8 @@ const MeetingSchema = new Schema<IMeeting>(
   { timestamps: true }
 );
 
-export const Meeting =
-  mongoose.models.Meeting || mongoose.model<IMeeting>('Meeting', MeetingSchema);
+if (mongoose.models.Meeting) {
+  delete mongoose.models.Meeting;
+}
+
+export const Meeting = mongoose.model<IMeeting>('Meeting', MeetingSchema);

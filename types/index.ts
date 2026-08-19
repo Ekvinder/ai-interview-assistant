@@ -78,7 +78,9 @@ export interface IEvaluation extends Document {
 export type MeetingStatus = 'scheduled' | 'active' | 'ended';
 
 export interface IParticipant {
-  user: Types.ObjectId;
+  user?: Types.ObjectId;
+  guestName?: string;
+  guestId?: string;
   role: 'host' | 'participant';
   joinedAt: Date;
   leftAt?: Date;
@@ -89,7 +91,9 @@ export interface IParticipant {
 }
 
 export interface IJoinRequest {
-  user: Types.ObjectId;
+  user?: Types.ObjectId;
+  guestName?: string;
+  guestId?: string;
   status: 'pending' | 'approved' | 'denied';
   requestedAt: Date;
   decidedAt?: Date;
