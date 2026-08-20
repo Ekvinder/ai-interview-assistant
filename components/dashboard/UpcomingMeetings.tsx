@@ -136,7 +136,7 @@ export const UpcomingMeetings = forwardRef<UpcomingMeetingsRef, UpcomingMeetings
                   </Button>
                   {isHost && (
                     <Button variant="destructive" size="sm" onClick={() => handleEnd(meeting._id)} disabled={isLoadingEnd}>
-                      <Square className="w-4 h-4 mr-2" /> {isLoadingEnd ? 'Ending...' : 'End'}
+                      <Square className="w-4 h-4 mr-2" /> {isLoadingEnd ? 'Ending...' : 'Cancel'}
                     </Button>
                   )}
                 </>

@@ -125,7 +125,28 @@ export default function WhiteboardCanvas({
       } : undefined}
       className={annotationMode ? undefined : "h-full w-full"}
     >
+      {/* Hide zoom controls and help button in annotation mode only.
+          Scoped to this wrapper's subtree — does not affect normal whiteboard. */}
+      {annotationMode && (
+        <style>{`
+          .excalidraw .zoom-actions,
+          .excalidraw .help-icon {
+            display: none !important;
+          }
+        `}</style>
+      )}
       <Excalidraw
+         UIOptions={{
+    canvasActions: {
+      changeViewBackgroundColor: false,
+      clearCanvas: false,
+      export: false,
+      loadScene: false,
+      saveToActiveFile: false,
+      toggleTheme: false,
+    },
+  }}
+
         excalidrawAPI={(instance) => {
            excalidrawApiRef.current = instance;
            // Cancel any previous pending timer (e.g. from a remount).

@@ -118,6 +118,11 @@ export interface WhiteboardSceneData {
 export interface WhiteboardElementsUpdate {
   elements: ExcalidrawElements;
   files: ExcalidrawFiles;
+  appState?: {
+    scrollX: number;
+    scrollY: number;
+    zoom: { value: number };
+  };
 }
 
 // ── Data-channel message types ────────────────────────────────────────────────
@@ -183,5 +188,13 @@ export type WhiteboardMessage =
       type: "whiteboard-permissions";
       /** Full list of controller identities (host excluded — host is always implicit) */
       controllers: string[];
+      sender: string;
+    }
+  | {
+      type: "chunk";
+      id: string;
+      i: number;
+      t: number;
+      d: string;
       sender: string;
     };

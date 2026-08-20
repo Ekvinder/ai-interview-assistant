@@ -64,9 +64,17 @@ export function sceneToFullData(scene: WhiteboardScene): WhiteboardSceneData {
 export function sceneToUpdate(
   scene: WhiteboardScene
 ): WhiteboardElementsUpdate {
+  const s = scene.appState as unknown as Record<string, unknown>;
   return {
     elements: scene.elements,
     files: scene.files,
+    appState: {
+      scrollX: (s.scrollX as number) ?? 0,
+      scrollY: (s.scrollY as number) ?? 0,
+      zoom: {
+        value: ((s.zoom as { value: number } | undefined)?.value as number) ?? 1,
+      },
+    }
   };
 }
 

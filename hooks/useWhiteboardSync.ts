@@ -160,6 +160,7 @@ export function useWhiteboardSync(
 
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const lastSyncedVersionRef = useRef<number>(0);
+  const lastSyncedScrollRef = useRef<{scrollX: number, scrollY: number, zoom: number}>({scrollX: 0, scrollY: 0, zoom: 1});
   const lastLocalSceneRef = useRef<{
     full: WhiteboardSceneData;
     update: WhiteboardElementsUpdate;
@@ -171,7 +172,7 @@ export function useWhiteboardSync(
   // Using a ref rather than a state value avoids triggering re-renders when
   // the send function identity changes (e.g. after a reconnect).
   const sendRef = useRef<
-    ((payload: Uint8Array, options: DataPublishOptions) => Promise<void>) | null
+    ((msg: WhiteboardMessage, options: DataPublishOptions) => Promise<void>) | null
   >(null);
 
   /**
@@ -181,6 +182,7 @@ export function useWhiteboardSync(
    */
   const pendingUpdatesRef = useRef<WhiteboardElementsUpdate[]>([]);
   const pendingFullSyncRef = useRef<WhiteboardSceneData | null>(null);
+  const chunksRef = useRef<Record<string, string[]>>({});
 
   const hostIdentityRef = useRef<string | undefined>(hostIdentity);
   useEffect(() => {
@@ -216,13 +218,10 @@ export function useWhiteboardSync(
   const applyRemoteUpdate = useCallback((update: WhiteboardElementsUpdate) => {
     const api = excalidrawApiRef.current;
     if (!api) {
-      // Canvas not ready yet — queue; the flush poll will apply once API is available.
       pendingUpdatesRef.current.push(update);
       return;
     }
 
-    // For sync targets with a defined stage size: incoming elements are in logical [0,1] coordinates.
-    // Denormalize them to the local stage's physical pixels before rendering.
     let elements = update.elements;
     if (stageSizeRef?.current) {
       const stage = stageSizeRef.current;
@@ -234,13 +233,30 @@ export function useWhiteboardSync(
       }
     }
 
-    lastSyncedVersionRef.current = getSceneVersion(elements);
-    api.updateScene({ elements, captureUpdate: "NEVER" });
+    // NOTE: do NOT set lastSyncedVersionRef here — that ref tracks locally-sent
+    // versions only. Setting it from a received update would cause the next local
+    // draw to match the ref and be silently dropped as a "duplicate".
+
+    // Files must be registered before updateScene so image elements render correctly.
     if (update.files) {
       const vals = Object.values(update.files);
       if (vals.length > 0) {
         try { api.addFiles(vals as Parameters<typeof api.addFiles>[0]); } catch { /* ignore */ }
       }
+    }
+
+    if (update.viewport && syncTarget === "whiteboard") {
+      api.updateScene({
+        elements,
+        appState: {
+          scrollX: update.viewport.scrollX,
+          scrollY: update.viewport.scrollY,
+          zoom: update.viewport.zoom,
+        } as Parameters<typeof api.updateScene>[0]["appState"],
+        captureUpdate: "NEVER",
+      });
+    } else {
+      api.updateScene({ elements, captureUpdate: "NEVER" });
     }
   }, [syncTarget, stageSizeRef]);
 
@@ -349,8 +365,53 @@ export function useWhiteboardSync(
       const latest = pending[pending.length - 1];
       pendingUpdatesRef.current = [];
       const elements = maybeDeNorm(latest.elements);
+      
+      // Update lastLocalSceneRef
+      if (lastLocalSceneRef.current) {
+        lastLocalSceneRef.current = {
+          full: {
+            ...lastLocalSceneRef.current.full,
+            elements: elements as any,
+            files: { ...lastLocalSceneRef.current.full.files, ...latest.files },
+            appState: latest.appState 
+              ? { ...lastLocalSceneRef.current.full.appState, scrollX: latest.appState.scrollX, scrollY: latest.appState.scrollY, zoom: { value: latest.appState.zoom.value } }
+              : lastLocalSceneRef.current.full.appState,
+          },
+          update: {
+            ...latest,
+            elements: elements as any,
+          }
+        };
+      } else {
+        lastLocalSceneRef.current = {
+          full: { elements: elements as any, appState: EMPTY_SCENE.appState, files: latest.files ?? {} },
+          update: { elements: elements as any, files: latest.files }
+        };
+      }
+
       lastSyncedVersionRef.current = getSceneVersion(elements);
-      api.updateScene({ elements, captureUpdate: "NEVER" });
+      
+      if (latest.appState) {
+        lastSyncedScrollRef.current = {
+          scrollX: latest.appState.scrollX,
+          scrollY: latest.appState.scrollY,
+          zoom: latest.appState.zoom.value,
+        };
+        const currentAppState = api.getAppState();
+        api.updateScene({ 
+          elements,
+          appState: {
+            ...currentAppState,
+            scrollX: latest.appState.scrollX,
+            scrollY: latest.appState.scrollY,
+            zoom: latest.appState.zoom,
+          } as Parameters<typeof api.updateScene>[0]["appState"],
+          captureUpdate: "NEVER" 
+        });
+      } else {
+        api.updateScene({ elements, captureUpdate: "NEVER" });
+      }
+
       if (latest.files) {
         const vals = Object.values(latest.files);
         if (vals.length > 0) {
@@ -365,6 +426,15 @@ export function useWhiteboardSync(
     const identity = room.localParticipant.identity;
     if (!identity || !sendRef.current) return;
 
+    if (isHostRef.current) {
+      // Host doesn't need to request from network; just restore from local ref.
+      if (lastLocalSceneRef.current) {
+        pendingFullSyncRef.current = lastLocalSceneRef.current.full;
+        pendingUpdatesRef.current = [];
+      }
+      return;
+    }
+
     const request: WhiteboardMessage = {
       type: "request-sync",
       target: syncTarget,
@@ -374,7 +444,7 @@ export function useWhiteboardSync(
       ? { reliable: true, destinationIdentities: [hostIdentityRef.current] }
       : { reliable: true };
 
-    sendRef.current(serializeMessage(request), opts).catch(() => { /* best-effort */ });
+    sendRef.current(request, opts).catch(() => { /* best-effort */ });
   }, [syncTarget]);
 
   // ── Message handler (stored in ref to avoid re-subscribing on every render) ─
@@ -385,7 +455,7 @@ export function useWhiteboardSync(
 
   useLayoutEffect(() => {
     onMessageRef.current = (msg: ReceivedDataMessage<typeof WHITEBOARD_TOPIC>) => {
-      const message = deserializeMessage(msg.payload);
+      let message = deserializeMessage(msg.payload);
       if (!message) return;
 
       const senderIdentity = msg.from?.identity || message.sender;
@@ -393,6 +463,33 @@ export function useWhiteboardSync(
 
       // Never process our own echo.
       if (senderIdentity && senderIdentity === localIdentity) return;
+
+      if (message.type === "chunk") {
+        if (!chunksRef.current[message.id]) {
+          chunksRef.current[message.id] = new Array(message.t);
+        }
+        chunksRef.current[message.id][message.i] = message.d;
+        
+        const arr = chunksRef.current[message.id];
+        let complete = true;
+        for (let j = 0; j < message.t; j++) {
+          if (arr[j] === undefined) {
+            complete = false; break;
+          }
+        }
+        
+        if (complete) {
+          const fullJson = arr.join("");
+          delete chunksRef.current[message.id];
+          try {
+            message = JSON.parse(fullJson) as WhiteboardMessage;
+          } catch (e) {
+            return;
+          }
+        } else {
+          return; // wait for more chunks
+        }
+      }
 
       // Ignore scene-related messages not meant for this hook instance
       if (
@@ -467,7 +564,7 @@ export function useWhiteboardSync(
               annotationActive: isHostRef.current ? (hostAnnotationActiveRef?.current ?? false) : undefined,
               controllers: Array.from(controllersRef.current),
             };
-            sendRef.current(serializeMessage(response), {
+            sendRef.current(response, {
               reliable: true,
               destinationIdentities: [requester],
             }).catch(() => { /* best-effort */ });
@@ -516,19 +613,41 @@ export function useWhiteboardSync(
   useDataChannel(WHITEBOARD_TOPIC, stableOnMessage);
 
   useLayoutEffect(() => {
-    sendRef.current = async (payload: Uint8Array, options: DataPublishOptions) => {
+    sendRef.current = async (msg: WhiteboardMessage, options: DataPublishOptions) => {
       if (room.state !== ConnectionState.Connected) {
-        // console.warn("[WB SEND ABORT] Room not connected:", room.state);
         return;
       }
       try {
-        // Cast payload to satisfy LiveKit's generic Uint8Array<ArrayBuffer> requirement
-        await room.localParticipant.publishData(payload as unknown as Uint8Array<ArrayBuffer>, {
-          ...options,
-          topic: WHITEBOARD_TOPIC,
-        });
+        const jsonStr = JSON.stringify(msg);
+        const CHUNK_SIZE = 15000;
+        if (jsonStr.length > CHUNK_SIZE) {
+          const total = Math.ceil(jsonStr.length / CHUNK_SIZE);
+          const id = Math.random().toString(36).substring(2, 9);
+          for (let i = 0; i < total; i++) {
+            const chunkMsg: WhiteboardMessage = {
+              type: "chunk",
+              id,
+              i,
+              t: total,
+              d: jsonStr.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
+              sender: room.localParticipant.identity,
+            };
+            const payload = new TextEncoder().encode(JSON.stringify(chunkMsg));
+            await room.localParticipant.publishData(payload as unknown as Uint8Array<ArrayBuffer>, {
+              ...options,
+              topic: WHITEBOARD_TOPIC,
+            });
+            // tiny delay to prevent flooding the channel
+            await new Promise(r => setTimeout(r, 5));
+          }
+        } else {
+          const payload = new TextEncoder().encode(jsonStr);
+          await room.localParticipant.publishData(payload as unknown as Uint8Array<ArrayBuffer>, {
+            ...options,
+            topic: WHITEBOARD_TOPIC,
+          });
+        }
       } catch (err) {
-        // console.error("[WB SEND ERROR] publishData failed:", err);
       }
     };
   }, [room]);
@@ -543,7 +662,7 @@ export function useWhiteboardSync(
       const identity = room.localParticipant.identity;
       if (!identity || !sendRef.current) return;
       const request: WhiteboardMessage = { type: "request-sync", target: syncTarget, sender: identity };
-      sendRef.current(serializeMessage(request), {
+      sendRef.current(request, {
         reliable: true,
         topic: WHITEBOARD_TOPIC,
       }).catch(() => { /* transient — no peers yet */ });
@@ -559,8 +678,20 @@ export function useWhiteboardSync(
     if (!identity) return;
 
     const currentVersion = getSceneVersion(scene.elements);
-    if (currentVersion === lastSyncedVersionRef.current) return;
+    
+    const scrollChanged = 
+      scene.appState.scrollX !== lastSyncedScrollRef.current.scrollX ||
+      scene.appState.scrollY !== lastSyncedScrollRef.current.scrollY ||
+      scene.appState.zoom.value !== lastSyncedScrollRef.current.zoom;
+
+    if (currentVersion === lastSyncedVersionRef.current && !scrollChanged) return;
+    
     lastSyncedVersionRef.current = currentVersion;
+    lastSyncedScrollRef.current = {
+      scrollX: scene.appState.scrollX,
+      scrollY: scene.appState.scrollY,
+      zoom: scene.appState.zoom.value,
+    };
 
     // For sync targets with a defined stage size: normalize physical pixel coordinates to logical [0,1]
     // relative to the local stage before putting elements on the wire.
@@ -611,7 +742,7 @@ export function useWhiteboardSync(
           timestamp: Date.now(),
         };
       // console.log("[WB CHANNEL SEND]", { topic: WHITEBOARD_TOPIC, type: message.type });
-      sendRef.current(serializeMessage(message), {
+      sendRef.current(message, {
         reliable: true,
         topic: WHITEBOARD_TOPIC,
       }).catch(() => { /* best-effort */ });
@@ -645,7 +776,7 @@ export function useWhiteboardSync(
       open,
       sender: identity,
     };
-    sendRef.current(serializeMessage(message), {
+    sendRef.current(message, {
       reliable: true,
       topic: WHITEBOARD_TOPIC,
     }).catch(() => { /* best-effort */ });
@@ -659,7 +790,7 @@ export function useWhiteboardSync(
       active,
       sender: identity,
     };
-    sendRef.current(serializeMessage(message), {
+    sendRef.current(message, {
       reliable: true,
       topic: WHITEBOARD_TOPIC,
     }).catch(() => { /* best-effort */ });
@@ -688,7 +819,7 @@ export function useWhiteboardSync(
     // console.log("[WB CHANNEL SEND]", { topic: WHITEBOARD_TOPIC, reliable: true, payloadType: message.type });
     // console.log("[WB PERMISSION SEND]", { controllers: controllerList, sender: identity });
 
-    sendRef.current(serializeMessage(message), {
+    sendRef.current(message, {
       reliable: true,
       topic: WHITEBOARD_TOPIC,
     }).then(() => {

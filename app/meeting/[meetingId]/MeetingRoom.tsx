@@ -19,7 +19,7 @@ import {
   useRoomContext,
 } from '@livekit/components-react';
 import type { TrackReferenceOrPlaceholder, ReceivedChatMessage } from '@livekit/components-react';
-import { ConnectionState, Track, Participant , RoomEvent} from 'livekit-client';
+import { ConnectionState, Track, Participant, RoomEvent } from 'livekit-client';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -78,20 +78,20 @@ export const MEETING_TOKEN_KEY = 'meeting_livekit_token';
 
 function connLabel(state: ConnectionState): string {
   switch (state) {
-    case ConnectionState.Connecting:   return 'Connecting…';
-    case ConnectionState.Connected:    return 'Connected';
+    case ConnectionState.Connecting: return 'Connecting…';
+    case ConnectionState.Connected: return 'Connected';
     case ConnectionState.Reconnecting: return 'Reconnecting…';
     case ConnectionState.Disconnected: return 'Disconnected';
-    default:                           return 'Unknown';
+    default: return 'Unknown';
   }
 }
 
 function connBadgeClass(state: ConnectionState): string {
   switch (state) {
-    case ConnectionState.Connected:    return 'bg-emerald-500/10 text-emerald-500';
+    case ConnectionState.Connected: return 'bg-emerald-500/10 text-emerald-500';
     case ConnectionState.Reconnecting: return 'bg-yellow-500/10 text-yellow-500';
     case ConnectionState.Disconnected: return 'bg-destructive/10 text-destructive';
-    default:                           return 'bg-muted text-muted-foreground';
+    default: return 'bg-muted text-muted-foreground';
   }
 }
 
@@ -194,8 +194,8 @@ function RoomTransitionHandler({
         onDisconnectCompleteRef.current();
       });
 
-  // Callback refs are intentionally excluded — we read them via ref.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Callback refs are intentionally excluded — we read them via ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSwitching, room]);
 
   return null;
@@ -213,14 +213,14 @@ interface MeetingRoomProps {
 
 export default function MeetingRoom({ meeting, userId, userName, userEmail, hostUserId }: MeetingRoomProps) {
   const router = useRouter();
-  const [token, setToken]           = useState<string | null>(null);
-  const [serverUrl, setServerUrl]   = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [joinStatus, setJoinStatus] = useState<'pending' | 'approved' | 'denied'>(
     (userId && userId === hostUserId) ? 'approved' : 'pending',
   );
   const [loading, setLoading] = useState(true);
-  const leftRef        = useRef(false);
+  const leftRef = useRef(false);
   const isSwitchingRef = useRef(false);
   const isHost = userId === hostUserId;
 
@@ -253,7 +253,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
         sessionStorage.removeItem(MEETING_TOKEN_KEY);
         const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || undefined) : undefined;
         const gName = !userId ? (sessionStorage.getItem('meetspace_guest_name') || undefined) : undefined;
-        
+
         await meetingClientService.joinMeeting(meeting.meetingId, gId, gName);
         const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId, gId);
         if (!cancelled) setJoinStatus(status);
@@ -273,7 +273,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     let timerId: ReturnType<typeof setTimeout>;
     let active = true;
     const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || undefined) : undefined;
-    
+
     const poll = async () => {
       try {
         const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId, gId);
@@ -311,7 +311,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
         const gName = !userId ? (sessionStorage.getItem('meetspace_guest_name') || undefined) : undefined;
         const finalUserId = userId || gId || 'unknown';
         const finalUserName = userName || gName || 'Guest';
-        
+
         const { token: t, url: u } = await getLiveKitToken(
           meeting.meetingId,
           finalUserId,
@@ -346,9 +346,9 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     })();
 
     return () => { cancelled = true; };
-  // setTargetBreakoutId, setIsSwitchingRooms, setReadyForTokenSwitch are all
-  // stable (useCallback / useState setters) — safe to omit from deps.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // setTargetBreakoutId, setIsSwitchingRooms, setReadyForTokenSwitch are all
+    // stable (useCallback / useState setters) — safe to omit from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     joinStatus,
     initialCheckComplete,
@@ -526,10 +526,10 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
 // ─── Inner room ───────────────────────────────────────────────────────────────
 
 function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: MeetingInfo; onLeave: () => void; hostUserId?: string; userId: string }) {
-  const connState                                          = useConnectionState();
-  const participants                                       = useParticipants();
-  const { localParticipant, isScreenShareEnabled }         = useLocalParticipant();
-  const isConnected                                        = connState === ConnectionState.Connected;
+  const connState = useConnectionState();
+  const participants = useParticipants();
+  const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
+  const isConnected = connState === ConnectionState.Connected;
 
   // Derive isHost from props (not from localParticipant) so it is correct from
   // the very first render — before LiveKit has connected and populated
@@ -570,10 +570,10 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     if (typeof Notification === 'undefined') return;
     if (Notification.permission === 'default') {
       notifPermRequestedRef.current = true;
-      Notification.requestPermission().catch(() => {/* ignore */});
+      Notification.requestPermission().catch(() => {/* ignore */ });
     }
   }, []);
- 
+
 
   // Play a short beep via Web Audio API — no external file required
   const playNotificationSound = useCallback(() => {
@@ -594,7 +594,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
       osc.stop(ctx.currentTime + 0.25);
       soundPlayingRef.current = true;
       setTimeout(() => { soundPlayingRef.current = false; }, 800);
-      osc.onended = () => ctx.close().catch(() => {/* ignore */});
+      osc.onended = () => ctx.close().catch(() => {/* ignore */ });
     } catch { /* AudioContext not available */ }
   }, []);
 
@@ -616,7 +616,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
       if (isOwn) continue; // never notify for own messages
 
       const senderName = resolveDisplayName(msg.from?.name, msg.from?.identity);
-      const preview    = msg.message.length > 50 ? msg.message.slice(0, 50) + '…' : msg.message;
+      const preview = msg.message.length > 50 ? msg.message.slice(0, 50) + '…' : msg.message;
 
       // 1. Unread badge — only when chat is not open
       if (showPanelRef.current !== 'chat') {
@@ -651,12 +651,12 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
         } catch { /* ignore */ }
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatMessages.length]);
 
-  const { toggle: toggleMic,          enabled: micEnabled,    pending: micPending    } = useTrackToggle({ source: Track.Source.Microphone });
-  const { toggle: toggleCamera,       enabled: cameraEnabled, pending: cameraPending } = useTrackToggle({ source: Track.Source.Camera });
-  const { toggle: toggleScreenShare,  pending: screenPending  }                        = useTrackToggle({ source: Track.Source.ScreenShare });
+  const { toggle: toggleMic, enabled: micEnabled, pending: micPending } = useTrackToggle({ source: Track.Source.Microphone });
+  const { toggle: toggleCamera, enabled: cameraEnabled, pending: cameraPending } = useTrackToggle({ source: Track.Source.Camera });
+  const { toggle: toggleScreenShare, pending: screenPending } = useTrackToggle({ source: Track.Source.ScreenShare });
 
   // ── Whiteboard sync & host-controlled permissions ─────────────────────────────────
   // One useWhiteboardSync instance per room provides DataChannel sync, scene state,
@@ -776,15 +776,17 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
   // Host: keep the hook's internal controllers ref in sync and broadcast
   // whenever the controllers array changes.
+  const [whiteboardLocked, setWhiteboardLocked] = useState(false); // whiteboard lock state
   const didMountPermissionsRef = useRef(false);
   useEffect(() => {
     if (!isHost) return;
+    const effectiveList = whiteboardLocked ? [] : hostControllersArray;
     // Always sync the ref so request-sync responses carry the current list.
-    whiteboardSyncControllersRef(hostControllersArray);
+    whiteboardSyncControllersRef(effectiveList);
     // Skip broadcast on initial mount — no participants to notify yet.
     if (!didMountPermissionsRef.current) { didMountPermissionsRef.current = true; return; }
-    whiteboardBroadcastPermissions(hostControllersArray);
-  }, [isHost, hostControllersArray, whiteboardBroadcastPermissions, whiteboardSyncControllersRef]);
+    whiteboardBroadcastPermissions(effectiveList);
+  }, [isHost, hostControllersArray, whiteboardLocked, whiteboardBroadcastPermissions, whiteboardSyncControllersRef]);
 
   // Participant: auto-open/close whiteboard panel driven by host broadcasts.
   // When the panel transitions to open, trigger a resync so the freshly-mounted
@@ -805,8 +807,8 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     } else if (!whiteboardOpen && prev && showPanel === 'whiteboard') {
       setShowPanel(null);
     }
-  // showPanel excluded — we only react to whiteboardOpen transitions.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // showPanel excluded — we only react to whiteboardOpen transitions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, whiteboardOpen]);
 
   // Host: grant drawing permission to a participant.
@@ -852,14 +854,13 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     if (!isHost) return;
     if (!hostAnnotationMountedRef.current) {
       hostAnnotationMountedRef.current = true;
-      return; 
+      return;
     }
     broadcastAnnotationState(hostAnnotationActive);
   }, [isHost, hostAnnotationActive, broadcastAnnotationState]);
 
   // ── Host controls ─────────────────────────────────────────────────────────
-  const [isLocked,         setIsLocked]         = useState(false); // meeting lock placeholder
-  const [whiteboardLocked, setWhiteboardLocked] = useState(false); // whiteboard lock state
+  const [isLocked, setIsLocked] = useState(false); // meeting lock placeholder
 
   // Ref so toggleWhiteboardLock can read the current controllers without capturing
   // a stale closure over hostControllersArray.
@@ -867,18 +868,10 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   useEffect(() => { hostControllersArrayRef.current = hostControllersArray; }, [hostControllersArray]);
 
   const toggleWhiteboardLock = useCallback(() => {
-    setWhiteboardLocked((locked) => {
-      const next = !locked;
-      // When locking: broadcast an empty controllers list so all participants
-      // immediately become view-only.  When unlocking: restore the real list.
-      // getReadOnlyState enforces the lock locally; broadcast keeps remotes in sync.
-      const effectiveList = next ? [] : hostControllersArrayRef.current;
-      whiteboardBroadcastPermissions(effectiveList);
-      return next;
-    });
-  }, [whiteboardBroadcastPermissions]);
+    setWhiteboardLocked((locked) => !locked);
+  }, []);
   const [removingIdentity, setRemovingIdentity] = useState<string | null>(null);
-  const [endingMeeting,    setEndingMeeting]    = useState(false);
+  const [endingMeeting, setEndingMeeting] = useState(false);
 
   // Host approval is deliberately outside LiveKit. A pending guest has no room
   // token, so cannot connect, publish, subscribe, or appear in this UI.
@@ -989,11 +982,11 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   }, [toggleCamera]);
 
   const allCameraTracks = useTracks(
-    [{ source: Track.Source.Camera,      withPlaceholder: true  }],
+    [{ source: Track.Source.Camera, withPlaceholder: true }],
     { onlySubscribed: false },
   );
   const allMicTracks = useTracks(
-    [{ source: Track.Source.Microphone,  withPlaceholder: true  }],
+    [{ source: Track.Source.Microphone, withPlaceholder: true }],
     { onlySubscribed: false },
   );
   const allScreenShareTracks = useTracks(
@@ -1097,8 +1090,8 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
       {/* Body: main stage + optional participant panel */}
       <div className="flex flex-1 overflow-hidden min-h-0">
-          {/* Main stage */}
-        
+        {/* Main stage */}
+
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           {screenShareActive && activeScreenShare ? (
             <div className="flex flex-col md:flex-row flex-1 overflow-hidden bg-black">
@@ -1146,22 +1139,24 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
                 </ScreenShareView>
               </div>
               {/* Thumbnail sidebar */}
-              <div className="shrink-0 h-32 md:h-auto md:w-64 lg:w-72 bg-zinc-950 flex md:flex-col gap-2 p-2 md:p-3 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto border-t md:border-t-0 md:border-l border-white/10 transition-all duration-300 ease-in-out">
-                {participants.map((participant) => {
-                  const isLocal = participant.identity === localParticipant?.identity;
-                  return (
-                    <div key={participant.identity} className="h-full md:h-auto w-40 md:w-full shrink-0">
-                      <ThumbnailTile
-                        participant={participant}
-                        cameraRef={cameraByIdentity.get(participant.identity)}
-                        micRef={micByIdentity.get(participant.identity)}
-                        isLocal={isLocal}
-                        localCameraEnabled={isLocal ? cameraEnabled : undefined}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
+              {showPanel !== 'participants' && (
+                <div className="shrink-0 h-32 md:h-auto md:w-64 lg:w-72 bg-zinc-950 flex md:flex-col gap-2 p-2 md:p-3 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto border-t md:border-t-0 md:border-l border-white/10 transition-all duration-300 ease-in-out">
+                  {participants.map((participant) => {
+                    const isLocal = participant.identity === localParticipant?.identity;
+                    return (
+                      <div key={participant.identity} className="h-full md:h-auto w-40 md:w-full shrink-0">
+                        <ThumbnailTile
+                          participant={participant}
+                          cameraRef={cameraByIdentity.get(participant.identity)}
+                          micRef={micByIdentity.get(participant.identity)}
+                          isLocal={isLocal}
+                          localCameraEnabled={isLocal ? cameraEnabled : undefined}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ) : (
             <div className="flex-1 overflow-hidden p-2 sm:p-3 bg-background/50">
@@ -1178,19 +1173,21 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
         {/* Participant panel (collapsible) */}
         {showPanel === 'participants' && (
-          <ParticipantPanel
-            participants={participants}
-            localParticipant={localParticipant ?? undefined}
-            hostUserId={hostUserId}
-            micByIdentity={micByIdentity}
-            cameraByIdentity={cameraByIdentity}
-            screenShareByIdentity={screenShareByIdentity}
-            onClose={() => setShowPanel(null)}
-            isLocalHost={isHost}
-            controllers={controllers}
-            onGiveWhiteboardControl={isHost ? hostGiveWhiteboardControl : undefined}
-            onRemoveWhiteboardControl={isHost ? hostRemoveWhiteboardControl : undefined}
-          />
+          <aside className="fixed inset-y-0 right-0 w-80 bg-background border-l z-60 overflow-y-auto">
+            <ParticipantPanel
+              participants={participants}
+              localParticipant={localParticipant ?? undefined}
+              hostUserId={hostUserId}
+              micByIdentity={micByIdentity}
+              cameraByIdentity={cameraByIdentity}
+              screenShareByIdentity={screenShareByIdentity}
+              onClose={() => setShowPanel(null)}
+              isLocalHost={isHost}
+              controllers={controllers}
+              onGiveWhiteboardControl={isHost ? hostGiveWhiteboardControl : undefined}
+              onRemoveWhiteboardControl={isHost ? hostRemoveWhiteboardControl : undefined}
+            />
+          </aside>
         )}
 
         {/* Chat panel (collapsible) */}
@@ -1204,13 +1201,12 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
           />
         )}
 
-       
+
 
         {/* Whiteboard panel (normal sidebar — only shown when not in screen-share
             annotation mode; in annotation mode the canvas lives inside the
             screen-share container above as an absolute overlay) */}
-        {(whiteboardOpen || showPanel === 'whiteboard') && !screenShareActive && (
-          <div className={(showPanel === 'whiteboard' || (whiteboardOpen && !showPanel)) ? 'contents' : 'hidden'}>
+        {(whiteboardOpen && !screenShareActive) && (
             <WhiteboardPanel
               meetingId={meeting.meetingId}
               isHost={isHost}
@@ -1227,8 +1223,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
                 if (isHost) setHostWhiteboardOpen(false);
               }}
             />
-          </div>
-        )}
+          )}
 
         {/* Host controls panel — host only */}
         {/* */}
@@ -1419,12 +1414,12 @@ function ThumbnailTile({ participant, cameraRef, micRef, isLocal, localCameraEna
   localCameraEnabled: boolean | undefined;
 }) {
   const { name, identity } = useParticipantInfo({ participant });
-  const isSpeaking         = useIsSpeaking(participant);
-  const micMuted           = isMicMuted(micRef);
-  const hasLiveCamera      = !!cameraRef && 'publication' in cameraRef && !!cameraRef.publication && !cameraRef.publication.isMuted;
-  const showCamera         = isLocal ? (localCameraEnabled ?? false) && hasLiveCamera : hasLiveCamera;
-  const label              = resolveDisplayName(name, identity);
-  const abbr               = makeInitials(label);
+  const isSpeaking = useIsSpeaking(participant);
+  const micMuted = isMicMuted(micRef);
+  const hasLiveCamera = !!cameraRef && 'publication' in cameraRef && !!cameraRef.publication && !cameraRef.publication.isMuted;
+  const showCamera = isLocal ? (localCameraEnabled ?? false) && hasLiveCamera : hasLiveCamera;
+  const label = resolveDisplayName(name, identity);
+  const abbr = makeInitials(label);
 
   return (
     <div className={`relative bg-zinc-800 rounded-lg overflow-hidden flex items-center justify-center shrink-0 w-full h-full md:h-auto aspect-video ring-2 transition-all duration-150 ${isSpeaking ? 'ring-emerald-400' : 'ring-transparent'}`}>
@@ -1455,7 +1450,7 @@ function VideoGrid({ participants, localParticipant, cameraByIdentity, micByIden
   localCameraEnabled: boolean;
 }) {
   const count = participants.length;
-  
+
   let cols = 1;
   let rows = 1;
 
@@ -1516,12 +1511,12 @@ function ParticipantTile({ participant, cameraRef, micRef, isLocal, localCameraE
   localCameraEnabled: boolean | undefined;
 }) {
   const { name, identity } = useParticipantInfo({ participant });
-  const isSpeaking         = useIsSpeaking(participant);
-  const micMuted           = isMicMuted(micRef);
-  const hasLiveCamera      = !!cameraRef && 'publication' in cameraRef && !!cameraRef.publication && !cameraRef.publication.isMuted;
-  const showCamera         = isLocal ? (localCameraEnabled ?? false) && hasLiveCamera : hasLiveCamera;
-  const label              = resolveDisplayName(name, identity);
-  const abbr               = makeInitials(label);
+  const isSpeaking = useIsSpeaking(participant);
+  const micMuted = isMicMuted(micRef);
+  const hasLiveCamera = !!cameraRef && 'publication' in cameraRef && !!cameraRef.publication && !cameraRef.publication.isMuted;
+  const showCamera = isLocal ? (localCameraEnabled ?? false) && hasLiveCamera : hasLiveCamera;
+  const label = resolveDisplayName(name, identity);
+  const abbr = makeInitials(label);
 
   return (
     <div className="w-full h-full min-h-0 min-w-0 flex items-center justify-center p-0.5 sm:p-1">
@@ -1695,7 +1690,7 @@ function PanelRow({
   onRemoveWhiteboardControl?: (identity: string) => void;
 }) {
   const { name, identity } = useParticipantInfo({ participant });
-  const isSpeaking         = useIsSpeaking(participant);
+  const isSpeaking = useIsSpeaking(participant);
 
   const micMuted = isMicMuted(micRef);
   const cameraOff =
@@ -1705,7 +1700,7 @@ function PanelRow({
     cameraRef.publication.isMuted;
 
   const label = resolveDisplayName(name, identity);
-  const abbr  = makeInitials(label);
+  const abbr = makeInitials(label);
 
   return (
     <div className="flex flex-col px-4 py-2.5 hover:bg-muted/40 transition-colors gap-1.5">
@@ -1814,15 +1809,15 @@ function ChatPanel({
   const [draft, setDraft] = useState('');
   const [width, setWidth] = useState(320);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef  = useRef<HTMLTextAreaElement>(null);
-  
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
   const isDragging = useRef(false);
 
   const startDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     isDragging.current = true;
     document.body.style.cursor = 'col-resize';
-    
+
     const onMouseMove = (e: MouseEvent) => {
       if (!isDragging.current) return;
       const newWidth = document.body.clientWidth - e.clientX;
@@ -1830,14 +1825,14 @@ function ChatPanel({
         setWidth(newWidth);
       }
     };
-    
+
     const onMouseUp = () => {
       isDragging.current = false;
       document.body.style.cursor = '';
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
     };
-    
+
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
   }, []);
@@ -1873,7 +1868,7 @@ function ChatPanel({
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 640;
 
   return (
-    <aside 
+    <aside
       style={!isMobile ? { width: `${width}px` } : undefined}
       className="
       w-full shrink-0
@@ -1882,7 +1877,7 @@ function ChatPanel({
       sm:static sm:inset-auto sm:z-auto
       relative
     ">
-      <div 
+      <div
         className="hidden sm:block absolute top-0 bottom-0 left-0 w-1.5 -ml-[3px] cursor-col-resize hover:bg-primary z-40 transition-colors"
         onMouseDown={startDrag}
         title="Drag to resize"
@@ -1904,7 +1899,7 @@ function ChatPanel({
       </div>
 
       {/* Messages */}
-       {/* classname message Square */}
+      {/* classname message Square */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
@@ -2072,7 +2067,7 @@ function HostControlsPanel({
             <div className="space-y-1">
               {participants.map((p) => {
                 const isLocal = p.identity === localIdentity;
-                const name    = resolveDisplayName(p.name, p.identity);
+                const name = resolveDisplayName(p.name, p.identity);
                 const isRemoving = removingIdentity === p.identity;
                 return (
                   <div
