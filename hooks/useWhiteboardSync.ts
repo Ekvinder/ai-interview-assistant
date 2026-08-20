@@ -221,10 +221,10 @@ export function useWhiteboardSync(
       return;
     }
 
-    // For annotation sync: incoming elements are in logical [0,1] coordinates.
+    // For sync targets with a defined stage size: incoming elements are in logical [0,1] coordinates.
     // Denormalize them to the local stage's physical pixels before rendering.
     let elements = update.elements;
-    if (syncTarget === "annotation" && stageSizeRef?.current) {
+    if (stageSizeRef?.current) {
       const stage = stageSizeRef.current;
       if (stage.width > 0 && stage.height > 0) {
         elements = denormalizeElements(
@@ -253,10 +253,10 @@ export function useWhiteboardSync(
       return;
     }
 
-    // For annotation sync: incoming elements are in logical [0,1] coordinates.
+    // For sync targets with a defined stage size: incoming elements are in logical [0,1] coordinates.
     // Denormalize to local stage pixels before rendering.
     let elements = scene.elements;
-    if (syncTarget === "annotation" && stageSizeRef?.current) {
+    if (stageSizeRef?.current) {
       const stage = stageSizeRef.current;
       if (stage.width > 0 && stage.height > 0) {
         elements = denormalizeElements(
@@ -273,6 +273,9 @@ export function useWhiteboardSync(
       appState: {
         ...scene.appState,
         viewBackgroundColor: currentAppState.viewBackgroundColor,
+        scrollX: currentAppState.scrollX,
+        scrollY: currentAppState.scrollY,
+        zoom: currentAppState.zoom,
       } as Parameters<typeof api.updateScene>[0]["appState"],
       captureUpdate: "NEVER",
     });
@@ -301,9 +304,9 @@ export function useWhiteboardSync(
       const api = excalidrawApiRef.current;
       if (!api) return; // canvas not ready yet, try next tick
 
-      // Helper: denormalize elements if this is an annotation sync and stage is known
+      // Helper: denormalize elements if stage size is known
       const maybeDeNorm = (els: WhiteboardSceneData["elements"]): WhiteboardSceneData["elements"] => {
-        if (syncTarget !== "annotation" || !stageSizeRef?.current) return els;
+        if (!stageSizeRef?.current) return els;
         const stage = stageSizeRef.current;
         if (stage.width === 0 || stage.height === 0) return els;
         return denormalizeElements(
@@ -325,6 +328,9 @@ export function useWhiteboardSync(
           appState: {
             ...pendingFull.appState,
             viewBackgroundColor: currentAppState.viewBackgroundColor,
+            scrollX: currentAppState.scrollX,
+            scrollY: currentAppState.scrollY,
+            zoom: currentAppState.zoom,
           } as Parameters<typeof api.updateScene>[0]["appState"],
           captureUpdate: "NEVER",
         });
@@ -556,10 +562,10 @@ export function useWhiteboardSync(
     if (currentVersion === lastSyncedVersionRef.current) return;
     lastSyncedVersionRef.current = currentVersion;
 
-    // For annotation sync: normalize physical pixel coordinates to logical [0,1]
+    // For sync targets with a defined stage size: normalize physical pixel coordinates to logical [0,1]
     // relative to the local stage before putting elements on the wire.
     let elementsToSend = scene.elements;
-    if (syncTarget === "annotation" && stageSizeRef?.current) {
+    if (stageSizeRef?.current) {
       const stage = stageSizeRef.current;
       if (stage.width > 0 && stage.height > 0) {
         elementsToSend = normalizeElements(

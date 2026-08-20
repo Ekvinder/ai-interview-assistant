@@ -54,18 +54,26 @@ export default function WhiteboardCanvas({
   annotationMode = false,
   excalidrawApiRef,
   onLocalChange,
+  onStageSize,
 }: WhiteboardCanvasProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   // Tracks whether this component instance is still mounted.
   // Used to cancel the deferred updateScene in the excalidrawAPI callback
   // and to clear the ref on unmount so no caller talks to a dead instance.
   const mountedRef = useRef(true);
+  // Tracks the pending background timer so it can be cancelled on unmount.
+  const bgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      // Clear the shared ref so useWhiteboardSync and the ResizeObserver
-      // don't call into an unmounted Excalidraw instance.
+      // Cancel any in-flight deferred updateScene and clear the api ref
+      // so nothing calls into an unmounted Excalidraw instance.
+      if (bgTimerRef.current !== null) {
+        clearTimeout(bgTimerRef.current);
+        bgTimerRef.current = null;
+      }
       excalidrawApiRef.current = null;
     };
   // excalidrawApiRef is a stable ref object — no need in deps.
@@ -91,6 +99,20 @@ export default function WhiteboardCanvas({
   // on its container element. We only need to ensure the wrapper div has the
   // correct CSS dimensions — no manual refresh() call needed.
   // The wrapperRef is kept for potential future use and for the mountedRef guard.
+  useEffect(() => {
+    if (!wrapperRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry && onStageSize) {
+        onStageSize({
+          width: entry.contentRect.width,
+          height: entry.contentRect.height,
+        });
+      }
+    });
+    observer.observe(wrapperRef.current);
+    return () => observer.disconnect();
+  }, [onStageSize]);
 
   return (
     <div
@@ -106,7 +128,12 @@ export default function WhiteboardCanvas({
       <Excalidraw
         excalidrawAPI={(instance) => {
            excalidrawApiRef.current = instance;
-           const timer = setTimeout(() => {
+           // Cancel any previous pending timer (e.g. from a remount).
+           if (bgTimerRef.current !== null) {
+             clearTimeout(bgTimerRef.current);
+           }
+           bgTimerRef.current = setTimeout(() => {
+             bgTimerRef.current = null;
              // Guard: don't call updateScene if the component unmounted
              // before this tick fired (next/dynamic mount/unmount cycle).
              if (!mountedRef.current) return;
@@ -117,21 +144,43 @@ export default function WhiteboardCanvas({
                captureUpdate: "NEVER",
              });
            }, 0);
-           // If the API ref is reassigned before the timer fires (remount),
-           // the previous timer is harmless because mountedRef guards it.
-           // Store it on the instance itself so nothing external needs cleanup.
-           // if the api ref is reassigned before the timer fires store it on the instance itsef so nothing external 
-           (instance as unknown as { _bgTimer?: ReturnType<typeof setTimeout> })._bgTimer = timer;
         }}
         viewModeEnabled={readOnly}
         theme="dark"
         initialData={
           annotationMode
-            ? { appState: { viewBackgroundColor: "transparent" } }
+            ? {
+                appState: {
+                  viewBackgroundColor: "transparent",
+                  scrollX: 0,
+                  scrollY: 0,
+                  zoom: { value: 1 as number & { _brand: 'normalizedZoom' } },
+                },
+              }
             : undefined
         }
         onChange={(elements, appState, files) => {
           if (appState.isLoading) return;
+
+          // In annotation mode: lock scroll and zoom so the canvas always
+          // stays aligned 1:1 over the screen-share stage.
+          if (annotationMode) {
+            const needsReset =
+              appState.scrollX !== 0 ||
+              appState.scrollY !== 0 ||
+              appState.zoom.value !== 1;
+            if (needsReset) {
+              excalidrawApiRef.current?.updateScene({
+                appState: {
+                  scrollX: 0,
+                  scrollY: 0,
+                  zoom: { value: 1 as number & { _brand: 'normalizedZoom' } },
+                } as Parameters<typeof excalidrawApiRef.current.updateScene>[0]['appState'],
+                captureUpdate: 'NEVER',
+              });
+            }
+          }
+
           if (readOnly) return;
           onLocalChange({ elements, appState, files });
         }}

@@ -61,6 +61,7 @@ import { toast } from 'sonner';
 import ScreenShareView from './components/ScreenShareView';
 import { useBreakoutTransition } from '@/hooks/useBreakoutTransition';
 import { useWhiteboardSync } from '@/hooks/useWhiteboardSync';
+import { normalizeElements, denormalizeElements } from '@/utils/annotationCoordinates';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -666,16 +667,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   const hostWhiteboardOpenRef = useRef(false);
   const hostAnnotationActiveRef = useRef(false);
 
-  // Ref to the current screen-share-stage dimensions, kept live by ScreenShareView
-  // via onStageSize. Passed to the annotation useWhiteboardSync so coordinates can
-  // be normalized on send and denormalized on receive.
-  const annotationStageSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
-  const handleAnnotationStageSize = useCallback(
-    (size: { width: number; height: number }) => {
-      annotationStageSizeRef.current = size;
-    },
-    []
-  );
+  const whiteboardStageSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
 
   const {
     handleLocalChange: whiteboardHandleLocalChange,
@@ -686,7 +678,33 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     broadcastPermissions: whiteboardBroadcastPermissions,
     syncControllersRef: whiteboardSyncControllersRef,
     requestResync: whiteboardRequestResync,
-  } = useWhiteboardSync(hostUserId, isHost, "whiteboard", hostWhiteboardOpenRef, hostAnnotationActiveRef);
+  } = useWhiteboardSync(hostUserId, isHost, "whiteboard", hostWhiteboardOpenRef, hostAnnotationActiveRef, whiteboardStageSizeRef);
+
+  const handleWhiteboardStageSize = useCallback(
+    (size: { width: number; height: number }) => {
+      const oldSize = whiteboardStageSizeRef.current;
+      whiteboardStageSizeRef.current = size;
+
+      if (
+        oldSize.width > 0 && oldSize.height > 0 &&
+        size.width > 0 && size.height > 0 &&
+        (oldSize.width !== size.width || oldSize.height !== size.height)
+      ) {
+        const api = whiteboardExcalidrawApiRef.current;
+        if (api) {
+          const elements = api.getSceneElements();
+          if (elements.length > 0) {
+            const logical = normalizeElements(elements as unknown as Record<string, unknown>[], oldSize);
+            const scaled = denormalizeElements(logical, size);
+            api.updateScene({ elements: scaled as any, captureUpdate: "NEVER" });
+          }
+        }
+      }
+    },
+    [whiteboardExcalidrawApiRef]
+  );
+
+  const annotationStageSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
 
   const {
     handleLocalChange: annotationHandleLocalChange,
@@ -695,6 +713,30 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     broadcastAnnotationState,
     requestResync: annotationRequestResync,
   } = useWhiteboardSync(hostUserId, isHost, "annotation", hostWhiteboardOpenRef, hostAnnotationActiveRef, annotationStageSizeRef);
+
+  const handleAnnotationStageSize = useCallback(
+    (size: { width: number; height: number }) => {
+      const oldSize = annotationStageSizeRef.current;
+      annotationStageSizeRef.current = size;
+
+      if (
+        oldSize.width > 0 && oldSize.height > 0 &&
+        size.width > 0 && size.height > 0 &&
+        (oldSize.width !== size.width || oldSize.height !== size.height)
+      ) {
+        const api = annotationExcalidrawApiRef.current;
+        if (api) {
+          const elements = api.getSceneElements();
+          if (elements.length > 0) {
+            const logical = normalizeElements(elements as unknown as Record<string, unknown>[], oldSize);
+            const scaled = denormalizeElements(logical, size);
+            api.updateScene({ elements: scaled as any, captureUpdate: "NEVER" });
+          }
+        }
+      }
+    },
+    [annotationExcalidrawApiRef]
+  );
 
   // Host manages whiteboardOpen locally and broadcasts it.
   // Participants use whiteboardOpenFromSync (received from host via DataChannel).
@@ -1168,7 +1210,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             annotation mode; in annotation mode the canvas lives inside the
             screen-share container above as an absolute overlay) */}
         {(whiteboardOpen || showPanel === 'whiteboard') && !screenShareActive && (
-          <div className={showPanel === 'whiteboard' ? 'contents' : 'hidden'}>
+          <div className={(showPanel === 'whiteboard' || (whiteboardOpen && !showPanel)) ? 'contents' : 'hidden'}>
             <WhiteboardPanel
               meetingId={meeting.meetingId}
               isHost={isHost}
@@ -1178,6 +1220,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
               controllers={controllers}
               excalidrawApiRef={whiteboardExcalidrawApiRef}
               onLocalChange={whiteboardHandleLocalChange}
+              onStageSize={handleWhiteboardStageSize}
               onClose={() => {
                 setShowPanel(null);
                 // Host closing the panel closes the whiteboard for everyone.

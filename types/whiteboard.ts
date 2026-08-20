@@ -52,6 +52,8 @@ export interface WhiteboardPanelProps {
   excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
   /** Called by WhiteboardCanvas.onChange to publish incremental updates. */
   onLocalChange: (scene: { elements: ExcalidrawElements; appState: ExcalidrawAppState; files: ExcalidrawFiles }) => void;
+  /** Called when the physical size of the whiteboard container changes. */
+  onStageSize?: (size: { width: number; height: number }) => void;
 }
 
 export interface WhiteboardCanvasProps {
@@ -67,6 +69,7 @@ export interface WhiteboardCanvasProps {
   // ── Injected sync bindings (from RoomContent via WhiteboardPanel) ───────────
   excalidrawApiRef: React.RefObject<ExcalidrawImperativeAPI | null>;
   onLocalChange: (scene: { elements: ExcalidrawElements; appState: ExcalidrawAppState; files: ExcalidrawFiles }) => void;
+  onStageSize?: (size: { width: number; height: number }) => void;
 }
 
 // ── Scene type (safe, uses only inferred types) ───────────────────────────────

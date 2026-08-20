@@ -41,6 +41,7 @@ export default function WhiteboardPanel({
   controllers,
   excalidrawApiRef,
   onLocalChange,
+  onStageSize,
 }: WhiteboardPanelProps) {
   const readOnly = getReadOnlyState(isHost, whiteboardLocked, localIdentity, controllers);
   const hasPermission = localIdentity ? controllers?.has(localIdentity) ?? false : false;
@@ -79,6 +80,7 @@ export default function WhiteboardPanel({
             annotationMode
             excalidrawApiRef={excalidrawApiRef}
             onLocalChange={onLocalChange}
+            onStageSize={onStageSize}
           />
         </div>
 
@@ -196,6 +198,7 @@ export default function WhiteboardPanel({
           annotationMode={false}
           excalidrawApiRef={excalidrawApiRef}
           onLocalChange={onLocalChange}
+          onStageSize={onStageSize}
         />
       </div>
     </aside>

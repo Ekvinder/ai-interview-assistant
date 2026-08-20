@@ -99,6 +99,12 @@ export function useBreakoutTransition(
 
   useEffect(() => {
     if (joinStatus !== 'approved') return;
+    // Respect the environment flag that disables automatic polling
+    // (used in development / sandboxed environments without a live backend).
+    if (process.env.NEXT_PUBLIC_DISABLE_AUTOMATIC_POLLS === 'true') {
+      setInitialCheckComplete(true);
+      return;
+    }
 
     let timerId: ReturnType<typeof setTimeout>;
     let active = true;
