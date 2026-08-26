@@ -271,6 +271,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
   // ── Guest approval polling ─────────────────────────────────────────────────
   useEffect(() => {
     if (isHost || joinStatus !== 'pending') return;
+    if (process.env.NEXT_PUBLIC_DISABLE_AUTOMATIC_POLLS === 'true') return;
     let delay = 2000;
     let timerId: ReturnType<typeof setTimeout>;
     let active = true;
@@ -919,6 +920,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
 
   useEffect(() => {
     if (!isHost) return;
+    if (process.env.NEXT_PUBLIC_DISABLE_AUTOMATIC_POLLS === 'true') return;
     let active = true;
     let timerId: ReturnType<typeof setTimeout>;
 

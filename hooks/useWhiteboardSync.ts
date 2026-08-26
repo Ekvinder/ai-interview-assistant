@@ -234,10 +234,18 @@ export function useWhiteboardSync(
       }
     }
 
-    // NOTE: do NOT set lastSyncedVersionRef here — that ref tracks locally-sent
-    // versions only. Setting it from a received update would cause the next local
-    // draw to match the ref and be silently dropped as a "duplicate".
-
+    // We MUST set lastSyncedVersionRef here so that when Excalidraw's onChange fires
+    // immediately after updateScene, the hook recognises that the scene matches the
+    // version we just received and drops the event rather than echoing it back to the network.
+    lastSyncedVersionRef.current = getSceneVersion(elements);
+    
+    if (update.appState) {
+      lastSyncedScrollRef.current = {
+        scrollX: update.appState.scrollX,
+        scrollY: update.appState.scrollY,
+        zoom: update.appState.zoom.value,
+      };
+    }
     // Files must be registered before updateScene so image elements render correctly.
     if (update.files) {
       const vals = Object.values(update.files);
