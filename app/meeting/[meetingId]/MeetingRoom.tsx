@@ -54,6 +54,7 @@ import {
   Undo2,
   Redo2,
   Layers,
+  Captions,
 } from 'lucide-react';
 import { getLiveKitToken } from '@/lib/api';
 import { meetingClientService } from '@/services/client/meeting.service';
@@ -62,6 +63,7 @@ import ScreenShareView from './components/ScreenShareView';
 import { useBreakoutTransition } from '@/hooks/useBreakoutTransition';
 import { useWhiteboardSync } from '@/hooks/useWhiteboardSync';
 import { normalizeElements, denormalizeElements } from '@/utils/annotationCoordinates';
+import TranscriptPanel, { TranscriptEntry } from './components/TranscriptPanel';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -319,7 +321,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
             name: finalUserName,
             metadata: JSON.stringify({ userId: finalUserId, email: userEmail, name: finalUserName }),
             breakoutRoomId: targetBreakoutId || undefined,
-          },
+          }
         );
         if (!cancelled) {
           setToken(t);
@@ -538,13 +540,39 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   // re-register even after LiveKit connected.
   const isHost = !!(hostUserId && userId === hostUserId);
 
-  // Panel state: 'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | null
-  const [showPanel, setShowPanel] = useState<'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | null>(null);
+  // Panel state: 'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | 'transcript' | null
+  const [showPanel, setShowPanel] = useState<'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | 'transcript' | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   // Ref mirrors showPanel so the unread effect always reads the current value
-  const showPanelRef = useRef<'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | null>(null);
+  const showPanelRef = useRef<'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | 'transcript' | null>(null);
 
-  const togglePanel = useCallback((panel: 'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout') => {
+  const [finalTranscripts, setFinalTranscripts] = useState<TranscriptEntry[]>([]);
+  const [currentInterims, setCurrentInterims] = useState<Map<string, TranscriptEntry>>(new Map());
+
+  useDataChannel('meetspace-transcript', (msg) => {
+    try {
+      const str = new TextDecoder().decode(msg.payload);
+      const data = JSON.parse(str);
+      if (data.type === 'transcript-final') {
+        setFinalTranscripts(prev => [...prev, data]);
+        setCurrentInterims(prev => {
+          const next = new Map(prev);
+          next.delete(data.speakerId);
+          return next;
+        });
+      } else if (data.type === 'transcript-interim') {
+        setCurrentInterims(prev => {
+          const next = new Map(prev);
+          next.set(data.speakerId, data);
+          return next;
+        });
+      }
+    } catch (e) {
+      console.error("Transcript parsing error", e);
+    }
+  });
+
+  const togglePanel = useCallback((panel: 'participants' | 'chat' | 'host' | 'whiteboard' | 'breakout' | 'transcript') => {
     setShowPanel((p) => {
       const next = p === panel ? null : panel;
       showPanelRef.current = next;
@@ -678,6 +706,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     broadcastPermissions: whiteboardBroadcastPermissions,
     syncControllersRef: whiteboardSyncControllersRef,
     requestResync: whiteboardRequestResync,
+    clearScene: whiteboardClearScene,
   } = useWhiteboardSync(hostUserId, isHost, "whiteboard", hostWhiteboardOpenRef, hostAnnotationActiveRef, whiteboardStageSizeRef);
 
   const handleWhiteboardStageSize = useCallback(
@@ -712,6 +741,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     annotationActive: annotationActiveFromSync,
     broadcastAnnotationState,
     requestResync: annotationRequestResync,
+    clearScene: annotationClearScene,
   } = useWhiteboardSync(hostUserId, isHost, "annotation", hostWhiteboardOpenRef, hostAnnotationActiveRef, annotationStageSizeRef);
 
   const handleAnnotationStageSize = useCallback(
@@ -845,9 +875,12 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
     setHostAnnotationActive((prev) => {
       const next = !prev;
       broadcastAnnotationState(next);
+      if (!next && !whiteboardLocked) {
+        annotationClearScene();
+      }
       return next;
     });
-  }, [isHost, broadcastAnnotationState]);
+  }, [isHost, broadcastAnnotationState, whiteboardLocked, annotationClearScene]);
 
   const hostAnnotationMountedRef = useRef(false);
   useEffect(() => {
@@ -939,7 +972,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
       await meetingClientService.endMeeting(meeting._id);
       onLeave();
     } catch (err) {
-      toast.error('Could not end meeting: ' + (err as Error).message);
+      toast.error('Could not cancel meeting: ' + (err as Error).message);
       setEndingMeeting(false);
     }
   }, [meeting._id, onLeave]);
@@ -1201,6 +1234,15 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
           />
         )}
 
+        {/* Transcript panel (collapsible) */}
+        {showPanel === 'transcript' && (
+          <TranscriptPanel
+            onClose={() => setShowPanel(null)}
+            finalTranscripts={finalTranscripts}
+            currentInterims={currentInterims}
+          />
+        )}
+
 
 
         {/* Whiteboard panel (normal sidebar — only shown when not in screen-share
@@ -1220,7 +1262,12 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
               onClose={() => {
                 setShowPanel(null);
                 // Host closing the panel closes the whiteboard for everyone.
-                if (isHost) setHostWhiteboardOpen(false);
+                if (isHost) {
+                  setHostWhiteboardOpen(false);
+                  if (!whiteboardLocked) {
+                    whiteboardClearScene();
+                  }
+                }
               }}
             />
           )}
@@ -1301,6 +1348,10 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
             onToggle={() => {
               const next = !hostWhiteboardOpen;
               setHostWhiteboardOpen(next);
+              whiteboardBroadcastVisibility(next);
+              if (!next && !whiteboardLocked) {
+                whiteboardClearScene();
+              }
               // Also control the local panel visibility for the host.
               if (next) {
                 setShowPanel('whiteboard');
@@ -1331,6 +1382,14 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
           inactiveIcon={<Users className="w-5 h-5" />}
           activeLabel="Hide people" inactiveLabel="Show people"
           onToggle={() => togglePanel('participants')} highlight={showPanel === 'participants'} />
+          
+        {/* Transcript button */}
+        <ControlButton active={showPanel === 'transcript'}
+          activeIcon={<Captions className="w-5 h-5" />}
+          inactiveIcon={<Captions className="w-5 h-5" />}
+          activeLabel="Hide transcript" inactiveLabel="Transcript"
+          onToggle={() => togglePanel('transcript')} highlight={showPanel === 'transcript'} />
+
         {/* Chat button with unread badge */}
         <div className="flex flex-col items-center gap-1 relative">
           <div className="relative">

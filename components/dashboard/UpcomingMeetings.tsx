@@ -56,9 +56,9 @@ export const UpcomingMeetings = forwardRef<UpcomingMeetingsRef, UpcomingMeetings
     };
 
     const handleEnd = async (id: string) => {
-      toast('End this meeting for everyone?', {
+      toast('Cancel this meeting for everyone?', {
         action: {
-          label: 'End Meeting',
+          label: 'Cancel Meeting',
           onClick: async () => {
             try {
               setLoadingAction(`end-${id}`);
@@ -66,14 +66,14 @@ export const UpcomingMeetings = forwardRef<UpcomingMeetingsRef, UpcomingMeetings
               toast.success('Meeting ended');
               refresh();
             } catch (err: any) {
-              toast.error(err.message || 'Failed to end meeting');
+              toast.error(err.message || 'Failed to cancel meeting');
             } finally {
               setLoadingAction(null);
             }
           },
         },
         cancel: {
-          label: 'Cancel',
+          label: 'Close',
           onClick: () => {},
         },
       });
@@ -136,7 +136,7 @@ export const UpcomingMeetings = forwardRef<UpcomingMeetingsRef, UpcomingMeetings
                   </Button>
                   {isHost && (
                     <Button variant="destructive" size="sm" onClick={() => handleEnd(meeting._id)} disabled={isLoadingEnd}>
-                      <Square className="w-4 h-4 mr-2" /> {isLoadingEnd ? 'Ending...' : 'Cancel'}
+                      <Square className="w-4 h-4 mr-2" /> {isLoadingEnd ? 'Canceling...' : 'Cancel'}
                     </Button>
                   )}
                 </>

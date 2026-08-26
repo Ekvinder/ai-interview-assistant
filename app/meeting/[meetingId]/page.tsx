@@ -8,6 +8,7 @@ import MeetingRoom from './MeetingRoom';
 import { Button } from '@/components/ui/button';
 import { AlertCircle, Clock } from 'lucide-react';
 import Link from 'next/link';
+import { MeetingEndedView } from './components/MeetingEndedView';
 
 export default async function MeetingPage({
   params,
@@ -82,18 +83,7 @@ export default async function MeetingPage({
 
   // ── Reject ended meetings ────────────────────────────────────────────────
   if (meeting.status === 'ended') {
-    return (
-      <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8 text-center">
-        <Clock className="w-12 h-12 text-muted-foreground opacity-40" />
-        <h1 className="text-2xl font-bold">Meeting Ended</h1>
-        <p className="text-muted-foreground text-sm max-w-sm">
-          This meeting has already ended and is no longer available to join.
-        </p>
-        <Link href="/dashboard">
-          <Button variant="outline">Return to Dashboard</Button>
-        </Link>
-      </div>
-    );
+    return <MeetingEndedView meetingId={meeting.meetingId} />;
   }
 
   // ── Hand off to the client room component ────────────────────────────────

@@ -30,7 +30,7 @@ export default function HostControls({ meetingDbId, onEndMeeting }: HostControls
       onEndMeeting();
     } catch (err) {
       const e = err as Error;
-      toast.error('Failed to end meeting: ' + (e.message || 'Unknown error'));
+      toast.error('Failed to cancel meeting: ' + (e.message || 'Unknown error'));
     } finally {
       setIsEnding(false);
       setConfirmingEnd(false);
@@ -59,7 +59,7 @@ export default function HostControls({ meetingDbId, onEndMeeting }: HostControls
         <div className="flex flex-col gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
           <div className="flex items-center gap-2 text-destructive text-xs font-medium">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-            End meeting for everyone?
+            Cancel meeting for everyone?
           </div>
           <div className="flex gap-2">
             <Button
@@ -69,7 +69,7 @@ export default function HostControls({ meetingDbId, onEndMeeting }: HostControls
               onClick={handleEndMeeting}
               disabled={isEnding}
             >
-              {isEnding ? 'Ending…' : 'End for All'}
+              {isEnding ? 'Canceling…' : 'Cancel for All'}
             </Button>
             <Button
               variant="outline"
@@ -90,7 +90,7 @@ export default function HostControls({ meetingDbId, onEndMeeting }: HostControls
           onClick={handleEndMeeting}
         >
           <PhoneOff className="w-3.5 h-3.5" />
-          End Meeting for Everyone
+          Cancel Meeting for Everyone
         </Button>
       )}
     </div>

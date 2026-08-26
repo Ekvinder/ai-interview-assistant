@@ -144,6 +144,7 @@ export interface UseWhiteboardSyncReturn {
    * the initial mount-time request-sync was sent long before the panel opened.
    */
   requestResync: () => void;
+  clearScene: () => void;
 }
 
 export function useWhiteboardSync(
@@ -245,13 +246,13 @@ export function useWhiteboardSync(
       }
     }
 
-    if (update.viewport && syncTarget === "whiteboard") {
+    if (update.appState && syncTarget === "whiteboard") {
       api.updateScene({
         elements,
         appState: {
-          scrollX: update.viewport.scrollX,
-          scrollY: update.viewport.scrollY,
-          zoom: update.viewport.zoom,
+          scrollX: update.appState.scrollX,
+          scrollY: update.appState.scrollY,
+          zoom: update.appState.zoom,
         } as Parameters<typeof api.updateScene>[0]["appState"],
         captureUpdate: "NEVER",
       });
@@ -835,8 +836,29 @@ export function useWhiteboardSync(
     controllersRef.current = newSet;
   }, []);
 
-
-
+  const clearScene = useCallback(() => {
+    lastLocalSceneRef.current = { full: EMPTY_SCENE, update: { elements: [], files: {} } };
+    lastSyncedVersionRef.current = 0;
+    lastSyncedScrollRef.current = {scrollX: 0, scrollY: 0, zoom: 1};
+    pendingFullSyncRef.current = null;
+    pendingUpdatesRef.current = [];
+    
+    const api = excalidrawApiRef.current;
+    if (api) {
+      api.updateScene({ elements: [], appState: EMPTY_SCENE.appState as any, captureUpdate: "NEVER" });
+    }
+    
+    if (sendRef.current && room.localParticipant.identity) {
+      const message: WhiteboardMessage = {
+        type: "scene-update",
+        target: syncTarget,
+        update: { elements: [], files: {} },
+        sender: room.localParticipant.identity,
+        timestamp: Date.now(),
+      };
+      sendRef.current(message, { reliable: true, topic: WHITEBOARD_TOPIC }).catch(() => {});
+    }
+  }, [syncTarget, room]);
 
   // ── Cleanup ───────────────────────────────────────────────────────────────
 
@@ -857,5 +879,6 @@ export function useWhiteboardSync(
     broadcastPermissions,
     syncControllersRef,
     requestResync,
+    clearScene,
   };
 }

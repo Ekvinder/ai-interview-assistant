@@ -50,8 +50,10 @@ export interface IInterview extends Document {
 // ─── Transcript ───────────────────────────────────────────────────────────────
 
 export interface ITranscript extends Document {
-  interviewId: Types.ObjectId;
-  speaker: 'ai' | 'user';
+  interviewId?: Types.ObjectId;
+  meetingId?: string;
+  speaker: string;
+  speakerName?: string;
   message: string;
   timestamp: number;
   createdAt: Date;
