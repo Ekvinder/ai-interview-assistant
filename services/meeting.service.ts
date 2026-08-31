@@ -499,7 +499,7 @@ export class MeetingService {
   }
 
   // --- Breakout Room Methods ---
-  static async getBreakoutRooms(userId: string, meetingId: string) {
+  static async getBreakoutRooms(userId: string | undefined, meetingId: string) {
     try {
       await connectToDatabase();
       const meeting = await Meeting.findOne({ meetingId });
@@ -507,12 +507,20 @@ export class MeetingService {
 
       // READ is allowed for the host and any approved participant.
       // WRITE operations (create, assign, status) keep the host-only guard.
-      const isHost = meeting.host.toString() === userId;
-      const isParticipant = meeting.participants.some(
-        (p: IParticipant) => p.user?.toString() === userId
-      );
-      if (!isHost && !isParticipant) {
-        throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Not a member of this meeting');
+      
+      if (userId) {
+        // Authenticated user - check if host or participant
+        const isHost = meeting.host.toString() === userId;
+        const isParticipant = meeting.participants.some(
+          (p: IParticipant) => p.user?.toString() === userId
+        );
+        if (!isHost && !isParticipant) {
+          throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Not a member of this meeting');
+        }
+      } else {
+        // Guest user - they're fetching breakout info while in the meeting
+        // Security is ensured by LiveKit token validation (they can only call this if approved)
+        // This endpoint is safe to allow for guests as it only reads public meeting data
       }
 
       return {

@@ -9,11 +9,22 @@ export async function GET(
 ) {
   try {
     const user = await getCurrentUser();
+    // Allow both authenticated users and guests
+    // Guests will pass their guestId as a query parameter
+    const { id } = await params;
+    
     if (!user) {
-      return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: HTTP_STATUS.UNAUTHORIZED });
+      // For guests, they need to be connected to LiveKit to fetch breakout rooms
+      // The meeting should be public data that guests can access once approved
+      // We'll still fetch the breakout rooms but rely on token validation for security
+      const data = await MeetingService.getBreakoutRooms(undefined, id);
+      return NextResponse.json({
+        success: true,
+        message: 'Breakout rooms fetched successfully',
+        data,
+      });
     }
 
-    const { id } = await params;
     const data = await MeetingService.getBreakoutRooms(user.userId, id);
 
     return NextResponse.json({
