@@ -32,7 +32,7 @@ export function JoinMeetingDialog({ trigger }: JoinMeetingDialogProps) {
 
   useEffect(() => {
     if (open && isLoggedIn === null) {
-      fetch('/api/auth/me')
+      fetch('/api/auth/me', { cache: 'no-store' })
         .then(res => setIsLoggedIn(res.ok))
         .catch(() => setIsLoggedIn(false));
     }

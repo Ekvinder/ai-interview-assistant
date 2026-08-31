@@ -26,6 +26,7 @@ interface PaginatedEnvelope {
 
 async function fetchPaginated(url: string): Promise<PaginatedMeetings> {
   const res = await fetch(url, {
+    cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
   });
   const json: PaginatedEnvelope = await res.json();
