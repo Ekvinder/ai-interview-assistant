@@ -33,7 +33,14 @@ export function JoinMeetingDialog({ trigger }: JoinMeetingDialogProps) {
   useEffect(() => {
     if (open && isLoggedIn === null) {
       fetch('/api/auth/me', { cache: 'no-store' })
-        .then(res => setIsLoggedIn(res.ok))
+        .then(async res => {
+          if (res.ok) {
+            const data = await res.json().catch(() => null);
+            setIsLoggedIn(!!data?.success);
+          } else {
+            setIsLoggedIn(false);
+          }
+        })
         .catch(() => setIsLoggedIn(false));
     }
   }, [open, isLoggedIn]);

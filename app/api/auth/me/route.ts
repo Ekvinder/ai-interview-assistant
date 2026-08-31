@@ -3,6 +3,8 @@ import { connectToDatabase } from '../../../../lib/mongodb';
 import { User } from '../../../../models/User';
 import { createResponse } from '../../../../utils/response';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const currentUser = await getCurrentUser();
