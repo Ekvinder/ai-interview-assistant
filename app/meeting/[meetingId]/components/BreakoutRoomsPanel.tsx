@@ -151,11 +151,14 @@ export default function BreakoutRoomsPanel({ meetingId, participants, onClose }:
 
   const handleAssign = async (roomId: string, participantIdentity: string) => {
     setIsUpdating(true);
+    console.log('[DEBUG BREAKOUT] Assigning participant:', participantIdentity, 'to room:', roomId);
     try {
       const newRoomsList = await meetingClientService.assignToBreakoutRoom(meetingId, roomId, participantIdentity);
+      console.log('[DEBUG BREAKOUT] Assignment successful, updated rooms:', newRoomsList);
       setRooms(newRoomsList);
       toast.success('Participant assigned');
     } catch (err) {
+      console.error('[DEBUG BREAKOUT] Assignment failed:', err);
       toast.error('Failed to assign participant: ' + (err as Error).message);
     } finally {
       setIsUpdating(false);

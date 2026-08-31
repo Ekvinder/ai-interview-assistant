@@ -123,13 +123,22 @@ export function useBreakoutTransition(
         // Determine which room (if any) the participant is currently assigned to.
         let newTarget: string | null = null;
         if (res.breakoutRoomsActive && res.breakoutRooms) {
-          const myRoom = res.breakoutRooms.find(r =>
-            r.participants.some(p => {
+          console.log('[DEBUG BREAKOUT] Polling - userId:', userId, 'breakoutRooms:', res.breakoutRooms);
+          const myRoom = res.breakoutRooms.find(r => {
+            const found = r.participants.some(p => {
               const pStr = typeof p === 'string' ? p : p.toString();
+              console.log('[DEBUG BREAKOUT] Checking participant:', pStr, 'against userId:', userId);
               return pStr === userId;
-            }),
-          );
-          if (myRoom) newTarget = myRoom.id;
+            });
+            console.log('[DEBUG BREAKOUT] Room', r.id, 'has participant?', found);
+            return found;
+          });
+          if (myRoom) {
+            console.log('[DEBUG BREAKOUT] Found room for user:', myRoom.id);
+            newTarget = myRoom.id;
+          } else {
+            console.log('[DEBUG BREAKOUT] No room found for user');
+          }
         }
         // If breakoutRoomsActive is false OR participant is unassigned:
         // newTarget stays null → return to / stay in main meeting.

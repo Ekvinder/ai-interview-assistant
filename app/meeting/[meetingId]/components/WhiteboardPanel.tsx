@@ -83,7 +83,7 @@ export default function WhiteboardPanel({
             onStageSize={onStageSize}
           />
         </div>
-
+         // floating toobat 
         {/* Floating toolbar: top-right corner, always on top of the canvas */}
         <div
           className="

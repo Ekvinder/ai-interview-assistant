@@ -568,6 +568,8 @@ export class MeetingService {
       if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
       if (meeting.host.toString() !== userId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only host can manage breakout rooms');
 
+      console.log('[DEBUG BREAKOUT] Assigning', participantId, 'to room', breakoutRoomId, 'in meeting', meetingId);
+
       // Remove from all existing breakout rooms first
       (meeting.breakoutRooms ?? []).forEach((room: any) => {
         room.participants = room.participants.filter((p: any) => {
@@ -580,17 +582,23 @@ export class MeetingService {
         const room = (meeting.breakoutRooms ?? []).find((r: any) => r.id === breakoutRoomId);
         if (!room) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Breakout room not found');
         
+        console.log('[DEBUG BREAKOUT] Room found:', room.id, 'adding participant', participantId);
+        
         // Support both MongoDB ObjectId (registered users) and guest IDs (strings)
         if (Types.ObjectId.isValid(participantId)) {
           // It's a valid MongoDB ObjectId - convert to ObjectId
           room.participants.push(new Types.ObjectId(participantId));
+          console.log('[DEBUG BREAKOUT] Added as ObjectId');
         } else {
           // It's a guest ID - store as string
           room.participants.push(participantId);
+          console.log('[DEBUG BREAKOUT] Added as string (guest ID)');
         }
+        console.log('[DEBUG BREAKOUT] Room participants now:', room.participants);
       }
 
       await meeting.save();
+      console.log('[DEBUG BREAKOUT] Assignment saved');
       return meeting.breakoutRooms;
     } catch (error: unknown) {
       if (error instanceof ApiError) throw error;

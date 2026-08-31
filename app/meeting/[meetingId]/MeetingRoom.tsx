@@ -222,12 +222,19 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     (userId && userId === hostUserId) ? 'approved' : 'pending',
   );
   const [loading, setLoading] = useState(true);
+  const [guestId, setGuestId] = useState<string>('');
   const leftRef = useRef(false);
   const isSwitchingRef = useRef(false);
   const isHost = userId === hostUserId;
 
-  // Get guest ID from sessionStorage
-  const guestId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || '') : '';
+  // Initialize guestId from sessionStorage
+  useEffect(() => {
+    if (!userId) {
+      const stored = sessionStorage.getItem('meetspace_guest_id') || '';
+      setGuestId(stored);
+      console.log('[DEBUG] Guest ID initialized:', stored);
+    }
+  }, [userId]);
 
   const {
     targetBreakoutId,
