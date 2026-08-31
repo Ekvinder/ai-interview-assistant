@@ -38,6 +38,7 @@ export async function connectToDatabase() {
       serverSelectionTimeoutMS: 5000,  // fail fast if mongo is unreachable
       socketTimeoutMS: 45000,   // close idle sockets after 45 s
       connectTimeoutMS: 10000,  // TCP connection timeout
+      readPreference: 'primary' as const, // ensure reads go to primary replica (prevents replication lag issues)
     };
 
     cached.promise = (async () => {

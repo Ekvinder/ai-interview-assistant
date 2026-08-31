@@ -1169,6 +1169,7 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
                       controllers={controllers}
                       excalidrawApiRef={annotationExcalidrawApiRef}
                       onLocalChange={annotationHandleLocalChange}
+                      onStageSize={handleAnnotationStageSize}
                     />
                   </div>
                 </ScreenShareView>
