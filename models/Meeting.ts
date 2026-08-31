@@ -44,7 +44,10 @@ const BreakoutRoomSchema = new Schema(
   {
     id: { type: String, required: true },
     name: { type: String, required: true },
-    participants: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+    participants: [{ 
+      type: Schema.Types.Mixed, // Can be ObjectId (user) or String (guestId)
+      ref: 'User' 
+    }],
   },
   { _id: false }
 );

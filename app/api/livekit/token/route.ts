@@ -52,7 +52,10 @@ export async function POST(request: NextRequest) {
         }
         
         const isParticipant = breakoutRoom.participants?.some(
-          (p: any) => p.toString() === participantId,
+          (p: any) => {
+            const pStr = p.toString?.() || p;
+            return pStr === participantId;
+          }
         );
         if (!isHost && !isParticipant) {
           return NextResponse.json({ success: false, message: 'Not assigned to this breakout room' }, { status: 403 });

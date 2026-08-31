@@ -104,7 +104,7 @@ export interface IJoinRequest {
 export interface IBreakoutRoom {
   id: string;
   name: string;
-  participants: Types.ObjectId[];
+  participants: (Types.ObjectId | string)[];
 }
 
 export interface IMeetingSettings {

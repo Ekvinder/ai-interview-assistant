@@ -58,7 +58,10 @@ export default function BreakoutRoomsPanel({ meetingId, participants, onClose }:
 
   const assignedParticipantIds = useMemo(() => {
     const ids = new Set<string>();
-    rooms.forEach(r => r.participants.forEach(p => ids.add(p.toString())));
+    rooms.forEach(r => r.participants.forEach(p => {
+      const id = typeof p === 'string' ? p : p.toString();
+      ids.add(id);
+    }));
     return ids;
   }, [rooms]);
 
