@@ -124,7 +124,10 @@ export function useBreakoutTransition(
         let newTarget: string | null = null;
         if (res.breakoutRoomsActive && res.breakoutRooms) {
           const myRoom = res.breakoutRooms.find(r =>
-            r.participants.some(p => p.toString() === userId),
+            r.participants.some(p => {
+              const pStr = typeof p === 'string' ? p : p.toString();
+              return pStr === userId;
+            }),
           );
           if (myRoom) newTarget = myRoom.id;
         }

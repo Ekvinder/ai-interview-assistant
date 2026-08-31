@@ -226,6 +226,9 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
   const isSwitchingRef = useRef(false);
   const isHost = userId === hostUserId;
 
+  // Get guest ID from sessionStorage
+  const guestId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || '') : '';
+
   const {
     targetBreakoutId,
     setTargetBreakoutId,
@@ -234,7 +237,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     readyForTokenSwitch,
     setReadyForTokenSwitch,
     initialCheckComplete,
-  } = useBreakoutTransition(meeting.meetingId, userId, joinStatus);
+  } = useBreakoutTransition(meeting.meetingId, userId || guestId, joinStatus);
 
   // Keep isSwitchingRef synchronised with isSwitchingRooms.
   // We update it both via useEffect (for async correctness) AND inline below
