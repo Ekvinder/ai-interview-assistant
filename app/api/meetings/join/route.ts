@@ -5,6 +5,8 @@ import { createResponse } from '@/utils/response';
 import { joinMeetingSchema } from '@/validators/meeting.validator';
 import { z } from 'zod';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     const user = await getCurrentUser();

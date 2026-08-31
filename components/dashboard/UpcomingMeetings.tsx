@@ -63,7 +63,7 @@ export const UpcomingMeetings = forwardRef<UpcomingMeetingsRef, UpcomingMeetings
             try {
               setLoadingAction(`end-${id}`);
               await meetingClientService.endMeeting(id);
-              toast.success('Meeting ended');
+              toast.success('Meeting canceled');
               refresh();
             } catch (err: any) {
               toast.error(err.message || 'Failed to cancel meeting');

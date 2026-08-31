@@ -3,6 +3,8 @@ import { getCurrentUser } from '@/lib/auth';
 import { MeetingService } from '@/services/meeting.service';
 import { createResponse } from '@/utils/response';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET is deliberately dual-purpose: hosts receive pending requests; guests
  * receive only their own decision. No LiveKit connection is involved here.

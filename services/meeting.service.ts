@@ -277,11 +277,23 @@ export class MeetingService {
     if (meeting.host.toString() !== hostUserId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only the host can view join requests');
     return (meeting.joinRequests ?? [])
       .filter((request: { status: string }) => request.status === 'pending')
-      .map((request: { user?: { _id: Types.ObjectId; name?: string; email?: string }; guestId?: string; guestName?: string; requestedAt: Date }) => ({
-        userId: request.user ? request.user._id.toString() : request.guestId,
-        name: request.user ? (request.user.name || request.user.email || 'Guest') : (request.guestName || 'Guest'),
-        requestedAt: request.requestedAt,
-      }));
+      .map((request: any) => {
+        let userIdStr = request.guestId;
+        let nameStr = request.guestName || 'Guest';
+        if (request.user) {
+          if (request.user._id) {
+            userIdStr = request.user._id.toString();
+            nameStr = request.user.name || request.user.email || 'Guest';
+          } else {
+            userIdStr = request.user.toString();
+          }
+        }
+        return {
+          userId: userIdStr,
+          name: nameStr,
+          requestedAt: request.requestedAt,
+        };
+      });
   }
 
   static async decideJoinRequest(hostUserId: string, meetingId: string, guestUserId: string, approved: boolean) {
