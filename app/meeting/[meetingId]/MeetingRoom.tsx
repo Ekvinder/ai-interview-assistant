@@ -236,6 +236,11 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     initialCheckComplete,
   } = useBreakoutTransition(meeting.meetingId, userId, joinStatus);
 
+  // DEBUG: Log host detection
+  useEffect(() => {
+    console.log('[DEBUG] isHost:', isHost, 'userId:', userId, 'hostUserId:', hostUserId);
+  }, [isHost, userId, hostUserId]);
+
   // Keep isSwitchingRef synchronised with isSwitchingRooms.
   // We update it both via useEffect (for async correctness) AND inline below
   // whenever we call setIsSwitchingRooms, so that onDisconnected — which fires
@@ -919,15 +924,24 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   useEffect(() => { meetingIdRef.current = meeting.meetingId; }, [meeting.meetingId]);
 
   useEffect(() => {
-    if (!isHost) return;
-    if (process.env.NEXT_PUBLIC_DISABLE_AUTOMATIC_POLLS === 'true') return;
+    if (!isHost) {
+      console.log('[DEBUG] Not a host, skipping polling');
+      return;
+    }
+    if (process.env.NEXT_PUBLIC_DISABLE_AUTOMATIC_POLLS === 'true') {
+      console.log('[DEBUG] Automatic polls disabled');
+      return;
+    }
+    console.log('[DEBUG] Starting host join request polling for meeting:', meetingIdRef.current);
     let active = true;
     let timerId: ReturnType<typeof setTimeout>;
 
     const poll = async () => {
       try {
+        console.log('[DEBUG] Polling for join requests...');
         const requests = await meetingClientService.getPendingJoinRequests(meetingIdRef.current);
         if (!active) return;
+        console.log('[DEBUG] Pending join requests:', requests);
         for (const request of requests) {
           if (notifiedJoinRequestsRef.current.has(request.userId)) continue;
           notifiedJoinRequestsRef.current.add(request.userId);

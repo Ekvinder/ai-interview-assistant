@@ -94,8 +94,14 @@ export default async function MeetingPage({
 
   // Hosts are admitted on page entry; guests are admitted only by the approval
   // endpoint after an explicit host decision.
+  console.log('[DEBUG PAGE] user.userId:', user?.userId, 'hostUserId:', hostUserId, 'matches:', user && hostUserId === user.userId);
   if (user && hostUserId === user.userId) {
-    try { await MeetingService.joinMeeting(user.userId, meetingId); } catch { /* surfaced by room if needed */ }
+    console.log('[DEBUG PAGE] User is host, calling joinMeeting');
+    try { await MeetingService.joinMeeting(user.userId, meetingId); } catch (e) { 
+      console.log('[DEBUG PAGE] joinMeeting error:', e);
+    }
+  } else {
+    console.log('[DEBUG PAGE] User is NOT host or no user');
   }
 
   return (
