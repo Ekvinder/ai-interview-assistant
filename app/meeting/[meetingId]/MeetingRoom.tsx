@@ -901,9 +901,45 @@ function RoomContent({ meeting, onLeave, hostUserId, userId }: { meeting: Meetin
   const hostControllersArrayRef = useRef<string[]>([]);
   useEffect(() => { hostControllersArrayRef.current = hostControllersArray; }, [hostControllersArray]);
 
-  const toggleWhiteboardLock = useCallback(() => {
-    setWhiteboardLocked((locked) => !locked);
-  }, []);
+  const toggleWhiteboardLock = useCallback(async () => {
+    setWhiteboardLocked((locked) => {
+      const newLocked = !locked;
+      
+      // When locking the whiteboard, save the current drawing
+      if (newLocked && whiteboardExcalidrawApiRef.current) {
+        (async () => {
+          try {
+            const api = whiteboardExcalidrawApiRef.current;
+            if (!api) return;
+            
+            const elements = api.getSceneElements();
+            const appState = api.getAppState();
+            const files = api.getFiles?.();
+            
+            // If there's content, export it as PNG
+            if (elements && elements.length > 0) {
+              // Use Excalidraw's export function to get canvas as blob
+              const { exportToCanvas } = await import('@excalidraw/excalidraw');
+              const canvas = await exportToCanvas({
+                elements,
+                appState,
+                files,
+                type: 'png',
+              });
+              
+              const dataUrl = canvas.toDataURL('image/png');
+              await meetingClientService.saveWhiteboard(meeting.meetingId, dataUrl);
+              console.log('[WHITEBOARD] Saved whiteboard drawing on lock');
+            }
+          } catch (error) {
+            console.error('[WHITEBOARD] Failed to save whiteboard on lock:', error);
+          }
+        })();
+      }
+      
+      return newLocked;
+    });
+  }, [meeting.meetingId, whiteboardExcalidrawApiRef]);
   const [removingIdentity, setRemovingIdentity] = useState<string | null>(null);
   const [endingMeeting, setEndingMeeting] = useState(false);
 

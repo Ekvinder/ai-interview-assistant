@@ -568,6 +568,11 @@ export class MeetingService {
       if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
       if (meeting.host.toString() !== userId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only host can manage breakout rooms');
 
+      // Validate that participantId is a valid MongoDB ObjectId
+      if (!Types.ObjectId.isValid(participantId)) {
+        throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Invalid participant ID format. Only registered users can be assigned to breakout rooms.');
+      }
+
       // Remove from all existing breakout rooms first
       (meeting.breakoutRooms ?? []).forEach((room: any) => {
         room.participants = room.participants.filter((p: Types.ObjectId) => p.toString() !== participantId);
