@@ -23,6 +23,9 @@ import { ConnectionState, Track, Participant, RoomEvent } from 'livekit-client';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { roomOptions } from '@/lib/livekit-client-options';
 import WhiteboardPanel from './components/WhiteboardPanel';
 import HostBreakoutPanel from './components/HostBreakoutPanel';
@@ -225,6 +228,8 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
   const leftRef = useRef(false);
   const isSwitchingRef = useRef(false);
   const isHost = userId === hostUserId;
+  const [missingGuestName, setMissingGuestName] = useState(false);
+  const [tempGuestName, setTempGuestName] = useState('');
 
   const {
     targetBreakoutId,
@@ -249,12 +254,23 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       return;
     }
     let cancelled = false;
+    
+    // Check if we have guest details or are logged in
+    const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)) : undefined;
+    const gName = !userId ? (sessionStorage.getItem('meetspace_guest_name') || undefined) : undefined;
+
+    if (!userId && !gName) {
+      setMissingGuestName(true);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     (async () => {
       try {
         sessionStorage.removeItem(MEETING_TOKEN_KEY);
-        const gId = !userId ? (sessionStorage.getItem('meetspace_guest_id') || undefined) : undefined;
-        const gName = !userId ? (sessionStorage.getItem('meetspace_guest_name') || undefined) : undefined;
+        // Ensure guest ID is stored if generated here
+        if (!userId && gId) sessionStorage.setItem('meetspace_guest_id', gId);
 
         await meetingClientService.joinMeeting(meeting.meetingId, gId, gName);
         const status = await meetingClientService.getJoinRequestStatus(meeting.meetingId, gId);
@@ -266,7 +282,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
       }
     })();
     return () => { cancelled = true; };
-  }, [isHost, meeting.meetingId, userId]);
+  }, [isHost, meeting.meetingId, userId, missingGuestName]);
 
   // ── Guest approval polling ─────────────────────────────────────────────────
   useEffect(() => {
@@ -387,6 +403,44 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
   }, [meeting.meetingId, userId]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
+
+  if (missingGuestName) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 p-8">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Join as Guest</CardTitle>
+            <CardDescription>Please enter your name to join this meeting.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              if (tempGuestName.trim()) {
+                sessionStorage.setItem('meetspace_guest_name', tempGuestName.trim());
+                setMissingGuestName(false);
+              }
+            }} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="guestName">Your Name</Label>
+                <Input
+                  id="guestName"
+                  placeholder="Enter your name"
+                  value={tempGuestName}
+                  onChange={(e) => setTempGuestName(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => router.push('/dashboard')}>Cancel</Button>
+                <Button type="submit" disabled={!tempGuestName.trim()}>Continue</Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   // Show spinner while we are: loading the token OR waiting for breakout init.
   // Do not show it when isSwitchingRooms is true — that has its own overlay.
