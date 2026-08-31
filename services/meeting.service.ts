@@ -62,8 +62,7 @@ export class MeetingService {
     try {
       await connectToDatabase();
       
-      // Use primary read preference to ensure we get the latest meeting data
-      const meeting = await Meeting.findOne({ meetingId }).populate('host', 'name email').populate('participants.user', 'name email').read('primary');
+      const meeting = await Meeting.findOne({ meetingId }).populate('host', 'name email').populate('participants.user', 'name email');
       if (!meeting) {
         throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
       }
@@ -203,8 +202,7 @@ export class MeetingService {
    */
   static async requestJoin(userId: string | undefined, meetingId: string, guestId?: string, guestName?: string) {
     await connectToDatabase();
-    // Use primary read preference to avoid replication lag issues in production
-    const meeting = await Meeting.findOne({ meetingId }).read('primary');
+    const meeting = await Meeting.findOne({ meetingId });
     if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
     if (meeting.status === 'ended') throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'This meeting has ended');
 
@@ -259,8 +257,7 @@ export class MeetingService {
 
   static async getJoinRequestStatus(userId: string | undefined, meetingId: string, guestId?: string) {
     await connectToDatabase();
-    // Use primary read preference to avoid replication lag issues in production
-    const meeting = await Meeting.findOne({ meetingId }).select('host joinRequests status').read('primary');
+    const meeting = await Meeting.findOne({ meetingId }).select('host joinRequests status');
     if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
     if (userId && meeting.host.toString() === userId) return { status: 'approved' as const };
     
@@ -275,8 +272,7 @@ export class MeetingService {
 
   static async getPendingJoinRequests(hostUserId: string, meetingId: string) {
     await connectToDatabase();
-    // Use primary read preference to avoid replication lag issues in production
-    const meeting = await Meeting.findOne({ meetingId }).populate('joinRequests.user', 'name email').read('primary');
+    const meeting = await Meeting.findOne({ meetingId }).populate('joinRequests.user', 'name email');
     if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
     if (meeting.host.toString() !== hostUserId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only the host can view join requests');
     return (meeting.joinRequests ?? [])
@@ -302,8 +298,7 @@ export class MeetingService {
 
   static async decideJoinRequest(hostUserId: string, meetingId: string, guestUserId: string, approved: boolean) {
     await connectToDatabase();
-    // Use primary read preference to avoid replication lag issues in production
-    const meeting = await Meeting.findOne({ meetingId }).read('primary');
+    const meeting = await Meeting.findOne({ meetingId });
     if (!meeting) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Meeting not found');
     if (meeting.host.toString() !== hostUserId) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only the host can decide join requests');
     const request = (meeting.joinRequests ?? []).find((r: { user?: Types.ObjectId; guestId?: string }) => r.user?.toString() === guestUserId || r.guestId === guestUserId);

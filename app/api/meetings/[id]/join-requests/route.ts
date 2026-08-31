@@ -26,21 +26,14 @@ export async function GET(
     // Only a logged in user can be the host
     if (user) {
       const hostId = meeting.host._id?.toString() ?? meeting.host.toString();
-      const isHost = hostId === user.userId;
-      console.log('[API DEBUG] GET join-requests: hostId:', hostId, 'user.userId:', user.userId, 'isHost:', isHost);
-      if (isHost) {
-        const requests = await MeetingService.getPendingJoinRequests(user.userId, meetingId);
-        console.log('[API DEBUG] Returning pending requests:', requests);
-        return createResponse(true, 'Pending join requests fetched', requests);
+      if (hostId === user.userId) {
+        return createResponse(true, 'Pending join requests fetched', await MeetingService.getPendingJoinRequests(user.userId, meetingId));
       }
     }
     
-    const status = await MeetingService.getJoinRequestStatus(user?.userId, meetingId, guestId);
-    console.log('[API DEBUG] Returning join request status:', status);
-    return createResponse(true, 'Join request status fetched', status);
+    return createResponse(true, 'Join request status fetched', await MeetingService.getJoinRequestStatus(user?.userId, meetingId, guestId));
   } catch (error: unknown) {
     const err = error as { statusCode?: number; message?: string };
-    console.log('[API DEBUG] Error in GET join-requests:', err);
     return createResponse(false, err.message || 'Failed to fetch join request', null, err.statusCode || 500);
   }
 }
