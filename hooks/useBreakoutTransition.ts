@@ -70,6 +70,18 @@ export function useBreakoutTransition(
    */
   const bypassedBreakoutIdRef = useRef<string | null>(null);
 
+  // Get the effective userId (use guestId if user is not logged in)
+  const effectiveUserIdRef = useRef<string>(userId);
+  useEffect(() => {
+    if (userId) {
+      effectiveUserIdRef.current = userId;
+    } else {
+      // For guests, get the ID from sessionStorage
+      const guestId = typeof window !== 'undefined' ? (sessionStorage.getItem('meetspace_guest_id') || '') : '';
+      effectiveUserIdRef.current = guestId;
+    }
+  }, [userId]);
+
   useEffect(() => { isSwitchingRef.current = isSwitchingRooms; }, [isSwitchingRooms]);
   useEffect(() => { targetBreakoutIdRef.current = targetBreakoutId; }, [targetBreakoutId]);
 
@@ -123,12 +135,12 @@ export function useBreakoutTransition(
         // Determine which room (if any) the participant is currently assigned to.
         let newTarget: string | null = null;
         if (res.breakoutRoomsActive && res.breakoutRooms) {
-          console.log('[DEBUG BREAKOUT] Polling - userId:', userId, 'breakoutRooms:', res.breakoutRooms);
+          console.log('[DEBUG BREAKOUT] Polling - effectiveUserId:', effectiveUserIdRef.current, 'breakoutRooms:', res.breakoutRooms);
           const myRoom = res.breakoutRooms.find(r => {
             const found = r.participants.some(p => {
               const pStr = typeof p === 'string' ? p : p.toString();
-              console.log('[DEBUG BREAKOUT] Checking participant:', pStr, 'against userId:', userId);
-              return pStr === userId;
+              console.log('[DEBUG BREAKOUT] Checking participant:', pStr, 'against effectiveUserId:', effectiveUserIdRef.current);
+              return pStr === effectiveUserIdRef.current;
             });
             console.log('[DEBUG BREAKOUT] Room', r.id, 'has participant?', found);
             return found;

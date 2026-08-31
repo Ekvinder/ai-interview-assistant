@@ -222,19 +222,9 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     (userId && userId === hostUserId) ? 'approved' : 'pending',
   );
   const [loading, setLoading] = useState(true);
-  const [guestId, setGuestId] = useState<string>('');
   const leftRef = useRef(false);
   const isSwitchingRef = useRef(false);
   const isHost = userId === hostUserId;
-
-  // Initialize guestId from sessionStorage
-  useEffect(() => {
-    if (!userId) {
-      const stored = sessionStorage.getItem('meetspace_guest_id') || '';
-      setGuestId(stored);
-      console.log('[DEBUG] Guest ID initialized:', stored);
-    }
-  }, [userId]);
 
   const {
     targetBreakoutId,
@@ -244,7 +234,7 @@ export default function MeetingRoom({ meeting, userId, userName, userEmail, host
     readyForTokenSwitch,
     setReadyForTokenSwitch,
     initialCheckComplete,
-  } = useBreakoutTransition(meeting.meetingId, userId || guestId, joinStatus);
+  } = useBreakoutTransition(meeting.meetingId, userId, joinStatus);
 
   // Keep isSwitchingRef synchronised with isSwitchingRooms.
   // We update it both via useEffect (for async correctness) AND inline below
