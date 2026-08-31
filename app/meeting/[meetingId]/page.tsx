@@ -10,6 +10,8 @@ import { AlertCircle, Clock } from 'lucide-react';
 import Link from 'next/link';
 import { MeetingEndedView } from './components/MeetingEndedView';
 
+export const dynamic = 'force-dynamic';
+
 export default async function MeetingPage({
   params,
 }: {
