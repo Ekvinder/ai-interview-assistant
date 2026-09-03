@@ -853,7 +853,18 @@ export function useWhiteboardSync(
     
     const api = excalidrawApiRef.current;
     if (api) {
-      api.updateScene({ elements: [], appState: EMPTY_SCENE.appState as any, captureUpdate: "NEVER" });
+      const currentAppState = api.getAppState();
+      api.updateScene({ 
+        elements: [], 
+        appState: {
+          ...EMPTY_SCENE.appState,
+          viewBackgroundColor: currentAppState.viewBackgroundColor,
+          scrollX: currentAppState.scrollX,
+          scrollY: currentAppState.scrollY,
+          zoom: currentAppState.zoom,
+        } as any, 
+        captureUpdate: "NEVER" 
+      });
     }
     
     if (sendRef.current && room.localParticipant.identity) {
